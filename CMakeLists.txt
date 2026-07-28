@@ -1,0 +1,65 @@
+cmake_minimum_required(VERSION 3.10)
+project(SurveilanceCam CXX CUDA)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(PkgConfig REQUIRED)
+find_package(OpenCV REQUIRED)
+find_package(CUDAToolkit REQUIRED)
+
+# Modul GStreamer yang dibutuhkan:
+pkg_check_modules(GST REQUIRED
+    gstreamer-1.0
+    gstreamer-app-1.0
+    gstreamer-video-1.0
+    gstreamer-rtsp-server-1.0
+)
+
+# ---- Lokasi TensorRT ----
+# Kalau TensorRT terinstall via .deb NVIDIA (biasanya di Jetson / JetPack),
+# header & lib sudah ada di /usr/include & /usr/lib/<arch>-linux-gnu, tidak perlu diubah.
+# Kalau install manual (tar.gz dari NVIDIA Developer), set path lewat:
+#   cmake -DTENSORRT_DIR=/path/ke/TensorRT-x.y.z ..
+set(TENSORRT_DIR "" CACHE PATH "Path ke instalasi TensorRT manual (kosongkan kalau pakai JetPack/apt)")
+
+if(TENSORRT_DIR)
+    set(TENSORRT_INCLUDE_DIR ${TENSORRT_DIR}/include)
+    set(TENSORRT_LIB_DIR ${TENSORRT_DIR}/lib)
+else()
+    set(TENSORRT_INCLUDE_DIR /usr/include)
+    set(TENSORRT_LIB_DIR /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE})
+endif()
+
+find_library(NVINFER_LIB nvinfer PATHS ${TENSORRT_LIB_DIR})
+find_library(NVONNXPARSER_LIB nvonnxparser PATHS ${TENSORRT_LIB_DIR})
+
+if(NOT NVINFER_LIB)
+    message(FATAL_ERROR "Tidak menemukan libnvinfer. Set -DTENSORRT_DIR=... kalau TensorRT terinstall manual, "
+                         "atau pastikan sudah install TensorRT (misal via apt/JetPack).")
+endif()
+
+include_directories(
+    ${GST_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+    ${TENSORRT_INCLUDE_DIR}
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+link_directories(${GST_LIBRARY_DIRS} ${TENSORRT_LIB_DIR})
+
+add_executable(SurveilanceCam
+    src/main.cpp
+    src/YoloDetector.cpp
+    src/rtspServer.cpp
+)
+
+target_compile_options(SurveilanceCam PUBLIC ${GST_CFLAGS_OTHER})
+
+target_link_libraries(SurveilanceCam
+    ${GST_LIBRARIES}
+    ${OpenCV_LIBS}
+    ${NVINFER_LIB}
+    CUDA::cudart
+    pthread
+)

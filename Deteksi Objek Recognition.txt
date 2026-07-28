@@ -1,0 +1,9 @@
+Deteksi Objek
+Recognition
+Target Identification
+License Plate
+crowd counting
+
+10-14 Agustus Test Integrasi
+23-24 Agustus Papua
+

@@ -1,0 +1,64 @@
+SurveilanceCam/
+├── Gstreamer/
+├── models/
+│   ├── onnx/                        # portable, sama untuk semua device
+│   │   ├── yolov8n.onnx
+│   │   └── plate_detector.onnx
+│   └── engines/                     # spesifik per-device, JANGAN di-commit ke git
+│       ├── rtx4060/
+│       │   └── yolov8n_fp16.engine
+│       └── orinnx/                  # nanti diisi pas Jetson ready
+├── Detection/
+│   ├── yolo_trt.cpp
+│   └── yolo_trt.h
+├── CMakeLists.txt
+└── main.cpp
+
+
+
+[Ultralytics Python] → training model → export .onnx
+        ↓
+[TensorRT + trtexec] → convert .onnx → .engine (dioptimasi utk GPU spesifik)
+        ↓
+[CUDA + cuDNN] → runtime layer yang menjalankan komputasi GPU di balik layar
+        ↓
+[OpenCV CUDA] → ambil frame, preprocessing, gambar hasil deteksi
+        ↓
+[GStreamer] → capture kamera & handle streaming video
+        ↓
+[Program C++ kamu] → orkestrasi semua komponen di atas jadi satu pipeline utuh
+
+Frekuensi Kerja Drone ATI
+2.4GHz
+5.8GHz
+
+(GNSS)
+| Sistem           | Sinyal |         Frekuensi |
+| ---------------- | ------ | ----------------: |
+| **BeiDou (BDS)** | B1I    |  **1561.098 MHz** |
+|                  | B2I    |  **1207.140 MHz** |
+|                  | B3I    |  **1268.520 MHz** |
+| **GPS**          | L1 C/A |  **1575.420 MHz** |
+|                  | L2C    |  **1227.600 MHz** |
+| **GLONASS**      | L1     | **1602.000 MHz*** |
+|                  | L2     | **1246.000 MHz*** |
+| **Galileo**      | E1     |  **1575.420 MHz** |
+|                  | E5b    |  **1207.140 MHz** |
+| **QZSS**         | L1     |  **1575.420 MHz** |
+|                  | L2     |  **1227.600 MHz** |
+
+
+[Kamera IP/CCTV]                                          [Client (VLC, dll)]
+   RTSP source                                              RTSP consumer
+       │                                                          ▲
+       │ (1) rtspsrc GStreamer                                    │ (6) H264 RTSP
+       ▼                                                          │
+┌─────────────────────┐                                  ┌─────────────────────┐
+│  captureThread       │                                  │  streamThread        │
+│  cv::VideoCapture     │                                  │  (RtspServer)         │
+│  (GStreamer backend)  │                                  │  x264enc + rtph264pay │
+└──────────┬───────────┘                                  └──────────▲───────────┘
+           │ cv::Mat (BGR)                                            │ GstBuffer
+           ▼                                                          │
+    latestCapturedFrame ───► main loop ───► YOLO infer ───► pushFrame()
+                              (2)              (3)              (4)(5)

@@ -1,0 +1,72 @@
+# ===== Build output =====
+build/
+out/
+bin/
+Debug/
+Release/
+x64/
+x86/
+cmake-build-*/
+venv/
+output/
+dataset/
+video/
+*.pt
+*.onnx
+*.engine
+# ===== Object & compiled files =====
+*.o
+*.obj
+*.out
+*.exe
+*.dll
+*.so
+*.so.*
+*.dylib
+*.a
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.deb
+# ===== CMake =====
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# ===== Precompiled headers =====
+*.gch
+*.pch
+
+# ===== IDE / Editor =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.suo
+*.user
+*.sln.docstates
+
+# ===== Visual Studio =====
+.vs/
+*.vcxproj.user
+
+# ===== Vcpkg / Conan (kalau dipakai) =====
+vcpkg_installed/
+conan.lock
+conanbuildinfo.*
+conaninfo.txt
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== Logs & temp =====
+*.log
+*.tmp
