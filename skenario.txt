@@ -1,0 +1,420 @@
+========================================================
+SKENARIO DRONE SURVEILLANCE
+========================================================
+
+
+========================================================
+SKENARIO 1: CROWD MONITORING PADA EVENT BESAR
+========================================================
+
+LATAR BELAKANG
+Sebuah konser/event publik dengan estimasi 20.000+ pengunjung berlangsung
+di lapangan terbuka. Panitia perlu memantau kepadatan massa, mendeteksi
+kerumunan berlebih (potensi stampede), dan merespons cepat jika ada
+insiden (pingsan, kerusuhan, kebakaran kecil).
+
+AKTOR
+- Drone: unit dengan kamera EO resolusi tinggi + gimbal wide-angle
+- GCS/Command Center: dashboard monitoring event
+- Event Safety Officer: pengambil keputusan
+- Tim medis & keamanan lapangan: respons insiden
+
+ALUR SKENARIO
+
+1. Fase Persiapan
+   - Drone di-deploy sebelum event dimulai, mapping area venue (buat
+     baseline density map)
+   - Set geofence: batas area terbang agar tidak melintasi zona terlarang
+     (panggung, VIP area sensitif privasi)
+   - Kalibrasi AI crowd counting berdasarkan kondisi lapangan (pencahayaan,
+     sudut kamera)
+
+2. Fase Monitoring Aktif
+   - Drone hover di titik-titik strategis (bergantian atau multi-drone)
+     di ketinggian 60-100m agar tidak mengganggu event
+   - Live feed wide-angle streaming ke command center
+   - AI melakukan crowd density estimation real-time - hasil ditampilkan
+     sebagai heatmap overlay di peta venue
+
+3. Fase Deteksi Anomali
+   Sistem AI mendeteksi:
+   - Kepadatan melebihi ambang batas aman (misal >4 orang/m2) di satu titik
+   - Pergerakan massa tidak wajar (potensi stampede - semua bergerak
+     searah cepat)
+   - Titik panas (indikasi kebakaran/asap)
+   - Kerumunan berkumpul mendadak (potensi kerusuhan/tawuran)
+   Alert otomatis ke dashboard dengan lokasi presisi (grid koordinat venue)
+
+4. Fase Respons
+   - Safety officer terima alert + visual dari drone
+   - Drone otomatis zoom ke titik kepadatan tinggi untuk assessment
+     lebih detail
+   - Jika kondisi darurat: broadcast instruksi ke tim lapangan terdekat
+     via radio/app
+   - Drone bisa dipakai memandu jalur evakuasi - terbang di atas jalur
+     yang harus dilalui massa sambil beri visual real-time ke tim di darat
+
+5. Fase Insiden Spesifik
+   Contoh: ada orang pingsan di tengah kerumunan
+   - Drone track lokasi, kirim koordinat presisi ke tim medis
+   - Drone bisa "memandu" tim medis lewat live feed (arah masuk yang
+     paling cepat dari kerumunan)
+
+6. Fase Selesai
+   - Setelah event selesai, drone lanjut monitoring proses pembubaran
+     massa (evakuasi keluar venue)
+   - Data density sepanjang event disimpan untuk evaluasi post-event
+     (kapan titik terpadat, dsb)
+
+DIAGRAM ALUR
+Deploy Pre-Event -> Monitoring Density Real-time -> [Normal] -> Lanjut Monitor
+                                |
+                    [Density Tinggi/Anomali Gerak]
+                                |
+                Alert + Zoom Assessment -> Safety Officer Verifikasi
+                                |
+        [False Alarm] -> Lanjut          [Confirmed] -> Broadcast Instruksi
+                                                            |
+                                            Pandu Evakuasi/Tim Medis -> Log Insiden
+
+CATATAN KHUSUS
+- Perlu extra hati-hati soal privasi (face recognition di crowd besar
+  biasanya dihindari/dianonimkan, cukup pakai body detection untuk
+  counting)
+- Regulasi setempat soal drone terbang di atas kerumunan publik biasanya
+  ketat - perlu izin khusus
+
+
+========================================================
+SKENARIO 2: PATROLI PERIMETER OTOMATIS DENGAN DETEKSI INTRUSI
+========================================================
+
+LATAR BELAKANG
+Sebuah kompleks industri seluas 10 hektar perlu dipantau 24 jam. Tim
+keamanan terbatas dan CCTV statis punya blind spot di area terbuka/
+perimeter luar. Drone digunakan untuk patroli rutin dan respons cepat
+saat ada anomali.
+
+AKTOR
+- Drone: unit terbang dengan kamera EO/IR + gimbal
+- Ground Control Station (GCS): software di command center
+- Operator: petugas yang memonitor dashboard
+- Security tim lapangan: merespons jika ada alert
+
+ALUR SKENARIO
+
+1. Fase Persiapan (Pre-flight)
+   - Operator set waypoint patroli via dashboard (rute perimeter sudah
+     predefined)
+   - Sistem cek battery, GPS lock, sinyal, kondisi cuaca (angin, hujan)
+   - Drone take-off otomatis dari docking station (jam 06:00, 12:00,
+     18:00, 00:00 - 4x sehari, atau on-demand)
+
+2. Fase Patroli (Autonomous Flight)
+   - Drone terbang di ketinggian 50-80m mengikuti rute yang sudah di-set
+   - Kamera merekam kontinu, stream real-time ke GCS
+   - Gimbal otomatis menghadap ke arah pagar/perimeter (nadir angle
+     disesuaikan)
+   - Overlay GPS + timestamp + altitude tampil di layar operator
+
+3. Fase Deteksi (AI Detection)
+   - Sistem AI onboard/edge (Jetson misalnya) menjalankan object
+     detection real-time
+   - Terdeteksi objek anomali: manusia di luar jam kerja, kendaraan
+     tidak dikenal, pagar rusak
+   - Sistem beri confidence score - kalau di atas threshold (misal 80%),
+     trigger alert
+
+4. Fase Alert & Respons
+   - Alert muncul di dashboard GCS dengan notifikasi suara + push
+     notification ke HP petugas
+   - Drone otomatis:
+     * Hover di lokasi anomali
+     * Zoom in ke target
+     * Mulai tracking (auto-follow jika objek bergerak)
+     * Snapshot otomatis tersimpan dengan geotag
+   - Operator verifikasi visual dari feed live
+   - Jika confirmed threat -> kirim tim lapangan + drone tetap track &
+     rekam sebagai bukti
+
+5. Fase Eskalasi (Opsional)
+   - Jika area berbahaya (drone tidak boleh terlalu dekat), drone tetap
+     standby di jarak aman
+   - Rekaman otomatis di-upload ke cloud sebagai bukti (evidence chain)
+   - Log kejadian tercatat: waktu, lokasi, jenis anomali, aksi yang
+     diambil
+
+6. Fase Selesai
+   - Setelah situasi clear, drone lanjut rute patroli atau kembali ke
+     docking station
+   - Auto-charging di docking station
+   - Video full disimpan di storage lokal + cloud (retention misal 30 hari)
+
+DIAGRAM ALUR
+Take-off -> Patroli Rute -> [Deteksi Normal] -> Lanjut Rute
+                    |
+            [Deteksi Anomali] -> Alert Operator -> Zoom & Track
+                    |
+        Verifikasi -> [False Alarm] -> Lanjut Rute
+                    |
+                [Confirmed] -> Notify Tim Lapangan -> Rekam Bukti -> Log Kejadian
+
+
+========================================================
+SKENARIO 3: RESPONS BENCANA ALAM (BANJIR/GEMPA/LONGSOR)
+========================================================
+
+LATAR BELAKANG
+Terjadi bencana alam (misal banjir bandang) di suatu wilayah. Akses
+darat terputus/terbatas, tim SAR perlu data cepat soal area terdampak,
+korban yang butuh evakuasi, dan kondisi infrastruktur sebelum mengirim
+tim ke lapangan.
+
+AKTOR
+- Drone: unit dengan kamera EO + thermal/IR, idealnya tahan cuaca ekstrem
+- GCS mobile: posko darurat (bisa portable/di lapangan)
+- Koordinator SAR/BPBD
+- Tim SAR lapangan
+
+ALUR SKENARIO
+
+1. Fase Mobilisasi Cepat
+   - Drone dikerahkan segera setelah laporan bencana masuk (response
+     time jadi krusial)
+   - GCS mobile di-setup di posko darurat terdekat (tenda/kendaraan
+     komando)
+   - Rute terbang awal fokus ke area prioritas (permukiman padat,
+     fasilitas publik seperti sekolah/rumah sakit)
+
+2. Fase Rapid Mapping
+   - Drone terbang systematic grid pattern untuk capture kondisi
+     keseluruhan area terdampak
+   - Live stream + rekaman dipakai bikin peta situasi cepat (damage
+     assessment map)
+   - Bandingkan dengan peta baseline (sebelum bencana) untuk identifikasi
+     area paling parah
+
+3. Fase Pencarian Korban
+   - Beralih ke thermal/IR camera terutama kalau malam hari atau area
+     tertutup asap/reruntuhan
+   - AI onboard mendeteksi tanda kehidupan (thermal signature manusia)
+     di tengah reruntuhan/banjir
+   - Setiap deteksi di-geotag otomatis dan langsung muncul di peta posko
+
+4. Fase Prioritisasi & Koordinasi
+   Koordinator SAR lihat semua titik deteksi di dashboard, prioritaskan
+   berdasarkan:
+   - Jumlah orang terdeteksi
+   - Tingkat urgensi (air naik, area terisolasi, dekat area berbahaya)
+   - Drone bisa dipakai pandu tim SAR ke lokasi via live feed (terutama
+     di medan yang GPS/peta tidak akurat karena perubahan kondisi
+     tanah/air)
+
+5. Fase Monitoring Berkelanjutan
+   - Drone patroli berkala untuk pantau perkembangan (air surut/naik,
+     longsor susulan)
+   - Data dipakai untuk keputusan evakuasi preventif di area yang belum
+     terdampak tapi berisiko
+
+6. Fase Dokumentasi & Evaluasi
+   - Semua rekaman dan data geotag disimpan sebagai dokumentasi resmi
+     (untuk laporan bencana, klaim asuransi, evaluasi kebijakan mitigasi)
+   - Data dipakai juga untuk update peta risiko wilayah ke depannya
+
+DIAGRAM ALUR
+Laporan Bencana Masuk -> Deploy Cepat -> Rapid Mapping Area
+                                |
+                Damage Assessment (bandingkan baseline)
+                                |
+            Switch ke Thermal -> Deteksi Korban
+                                |
+        Geotag Otomatis -> Prioritisasi oleh Koordinator
+                                |
+            Pandu Tim SAR (live feed) -> Evakuasi
+                                |
+    Monitoring Berkelanjutan -> Dokumentasi & Evaluasi
+
+CATATAN KHUSUS
+- Drone perlu tahan kondisi ekstrem (hujan, angin kencang) - spesifikasi
+  IP rating jadi penting
+- Battery life & range krusial karena area bencana kadang luas dan posko
+  jauh dari titik terdampak
+- Perlu skema komunikasi cadangan (satelit/LTE) karena infrastruktur
+  telekomunikasi lokal sering ikut rusak
+- Koordinasi dengan otoritas penerbangan tetap perlu meski situasi
+  darurat (biasanya ada prosedur khusus emergency flight clearance)
+
+
+========================================================
+SKENARIO 4: KONVOI PENGAWALAN (VIP/KENDARAAN)
+========================================================
+
+LATAR BELAKANG
+Sebuah konvoi kendaraan VIP (pejabat, tamu negara, atau logistik
+berharga) melintasi rute darat yang rawan. Tim keamanan darat butuh
+pandangan udara real-time untuk mendeteksi ancaman di depan konvoi
+(kemacetan, kerumunan mencurigakan, kendaraan tak dikenal mendekat)
+sebelum konvoi tiba di titik tersebut.
+
+AKTOR
+- Drone: unit dengan kamera EO zoom tinggi + gimbal stabil, kecepatan
+  terbang mengimbangi kendaraan darat
+- GCS: unit mobile di kendaraan komando konvoi
+- Team Leader Pengawalan: pengambil keputusan rute/kecepatan
+- Tim keamanan darat (voorijder, pengawal): eksekusi di lapangan
+
+ALUR SKENARIO
+
+1. Fase Persiapan
+   - Rute konvoi di-input ke sistem, termasuk titik rawan (perempatan,
+     jembatan, area padat) yang perlu perhatian ekstra
+   - Drone di-briefing untuk mode "follow route" mengikuti jalur konvoi
+   - Sinkronisasi waktu keberangkatan drone dengan estimasi start konvoi
+
+2. Fase Pengawalan Aktif (Leading/Ahead Position)
+   - Drone terbang mendahului posisi konvoi (jarak misal 500m-1km di
+     depan) untuk scouting jalur
+   - Live feed streaming ke kendaraan komando, ditampilkan di layar
+     team leader
+   - Drone terus reposisi mengikuti pergerakan konvoi (auto-tracking
+     GPS kendaraan komando sebagai reference point)
+
+3. Fase Deteksi Ancaman/Hambatan
+   Sistem AI + operator memantau untuk:
+   - Kemacetan/hambatan di jalur yang akan dilalui
+   - Kerumunan mencurigakan atau berkumpul mendadak di rute
+   - Kendaraan mencurigakan berhenti/mendekat ke jalur konvoi
+   - Kondisi jalan (perbaikan mendadak, blokade, kecelakaan)
+
+4. Fase Respons
+   - Alert dikirim ke team leader dengan estimasi waktu konvoi tiba di
+     titik tersebut
+   - Team leader putuskan: reroute, perlambat, atau kirim tim depan
+     untuk clear area
+   - Drone tetap hover/track titik rawan sampai konvoi lewat dengan aman
+   - Setelah titik rawan terlewati, drone kembali ke posisi leading
+     di depan konvoi
+
+5. Fase Kawasan Sensitif (Rest Area/Pemberhentian)
+   - Saat konvoi berhenti (istirahat, acara), drone beralih ke mode
+     hover di atas lokasi, monitoring perimeter area pemberhentian
+   - Deteksi orang yang mendekat ke luar radius aman
+
+6. Fase Selesai
+   - Konvoi tiba di tujuan, drone lakukan final sweep area tujuan
+     sebelum VIP turun kendaraan
+   - Rekaman perjalanan disimpan sebagai dokumentasi/evaluasi rute
+
+DIAGRAM ALUR
+Briefing Rute -> Drone Leading Position (depan konvoi)
+                            |
+            Scouting Real-time -> [Jalur Aman] -> Lanjut Leading
+                            |
+                [Terdeteksi Hambatan/Ancaman]
+                            |
+        Alert Team Leader -> Keputusan (Reroute/Perlambat/Clear)
+                            |
+        Titik Rawan Clear -> Kembali Leading -> Konvoi Lanjut
+                            |
+            Tiba Tujuan -> Final Sweep -> Dokumentasi Selesai
+
+CATATAN KHUSUS
+- Perlu kecepatan terbang drone yang bisa mengimbangi kecepatan
+  kendaraan darat (terutama di jalan tol)
+- Link komunikasi harus stabil meski konvoi bergerak jauh - pertimbangkan
+  multi-drone relay atau 4G/5G sebagai backup radio link
+- Koordinasi ketat dengan otoritas setempat karena drone terbang di
+  atas jalan umum/area publik
+
+
+========================================================
+SKENARIO 5: PENGAWASAN PERBATASAN/LAHAN PERTANIAN
+========================================================
+
+LATAR BELAKANG
+Sebuah lahan pertanian/perkebunan luas (atau area perbatasan properti)
+rawan terhadap intrusi manusia (pencurian hasil panen, illegal logging,
+perambahan lahan) maupun hewan liar/ternak yang masuk tanpa izin dan
+merusak tanaman. Pemilik lahan butuh sistem pemantauan otomatis karena
+area terlalu luas untuk patroli manual rutin.
+
+AKTOR
+- Drone: unit dengan kamera EO + opsional thermal untuk deteksi malam
+  hari, endurance tinggi untuk cakupan lahan luas
+- GCS: dashboard di pos jaga/kantor lahan
+- Penjaga lahan/petugas keamanan
+- Pemilik/manajer lahan: pengambil keputusan tindak lanjut
+
+ALUR SKENARIO
+
+1. Fase Persiapan
+   - Mapping batas lahan/perbatasan ke dalam sistem sebagai geofence
+   - Set waypoint patroli mengikuti garis batas dan titik rawan
+     (jalur akses masuk, area yang sering jadi lokasi pencurian)
+   - Jadwal patroli disesuaikan waktu rawan (dini hari, musim panen)
+
+2. Fase Patroli Rutin
+   - Drone terbang menyusuri garis perbatasan/batas lahan di ketinggian
+     yang mencakup pandangan luas (40-60m tergantung jenis tanaman)
+   - Kamera merekam kondisi tanaman, pagar, dan jalur akses secara
+     kontinu
+   - Untuk lahan sangat luas, drone bisa dijadwalkan multi-sortie
+     (beberapa sesi terbang bergantian dengan charging)
+
+3. Fase Deteksi Anomali
+   Sistem AI mendeteksi:
+   - Manusia di area terlarang/di luar jam kerja normal
+   - Kendaraan tidak dikenal masuk melalui jalur non-akses resmi
+   - Hewan ternak/liar yang masuk ke area tanaman
+   - Kerusakan pagar/batas fisik lahan
+   - Untuk kasus illegal logging: area vegetasi yang berkurang
+     dibanding baseline (bisa dibandingkan dengan citra sebelumnya)
+
+4. Fase Alert & Respons
+   - Alert ke dashboard penjaga lengkap dengan lokasi presisi di peta
+     lahan
+   - Drone otomatis zoom & track ke titik anomali untuk verifikasi
+     (bedakan manusia vs hewan vs kendaraan)
+   - Jika manusia terdeteksi di area terlarang: notifikasi ke penjaga
+     terdekat untuk cek langsung
+   - Jika hewan ternak/liar: bisa aktifkan deterrent (suara/lampu dari
+     drone) untuk mengusir tanpa perlu turun tangan manual, sambil
+     notifikasi tetap dikirim
+
+5. Fase Dokumentasi Bukti
+   - Snapshot dan rekaman anomali tersimpan dengan geotag dan timestamp
+   - Berguna sebagai bukti jika terjadi sengketa lahan atau pelaporan
+     ke pihak berwajib (pencurian, perambahan)
+
+6. Fase Selesai
+   - Drone lanjut rute patroli atau kembali ke titik charging
+   - Data harian direkap: jumlah anomali terdeteksi, jenis (manusia/
+     hewan/kerusakan), lokasi yang paling sering jadi titik masalah
+
+DIAGRAM ALUR
+Mapping Batas Lahan -> Patroli Rutin Sesuai Jadwal
+                                |
+            [Kondisi Normal] -> Lanjut Rute
+                                |
+                    [Terdeteksi Anomali]
+                                |
+        Zoom & Verifikasi -> Klasifikasi (Manusia/Hewan/Kerusakan)
+                                |
+    Notifikasi Penjaga -> [Hewan] -> Deterrent Otomatis
+                                |
+                    [Manusia/Kerusakan] -> Cek Langsung -> Dokumentasi Bukti
+                                |
+                        Rekap Data Harian
+
+CATATAN KHUSUS
+- Endurance/battery life jadi faktor penting untuk cakupan lahan luas -
+  pertimbangkan multi-drone atau fixed-wing untuk efisiensi area besar
+- Thermal camera sangat membantu untuk deteksi di malam hari atau area
+  bervegetasi lebat
+- Perlu kalibrasi AI agar tidak salah alert (false positive) antara
+  hewan ternak sendiri vs hewan liar/manusia
+
+
+========================================================
+END OF FILE
+========================================================
