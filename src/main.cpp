@@ -116,6 +116,25 @@ bool parseBool(const std::string& value) {
     return (v == "1" || v == "true" || v == "yes" || v == "on");
 }
 
+// ---------------- Helper: parse string -> enum (khusus baca config/CLI) ----------------
+EncoderType parseEncoderType(const std::string& value, EncoderType fallback) {
+    std::string v = value;
+    std::transform(v.begin(), v.end(), v.begin(), ::tolower);
+    if (v == "cpu")                          return EncoderType::CPU;
+    if (v == "nvidia_gpu" || v == "gpu")     return EncoderType::NVIDIA_GPU;
+    if (v == "jetson")                       return EncoderType::JETSON;
+    logWarn("encoder_type '" + value + "' tidak dikenal, memakai default.");
+    return fallback;
+}
+
+CodecType parseCodecType(const std::string& value, CodecType fallback) {
+    std::string v = value;
+    std::transform(v.begin(), v.end(), v.begin(), ::tolower);
+    if (v == "h264") return CodecType::H264;
+    if (v == "h265") return CodecType::H265;
+    logWarn("codec_type '" + value + "' tidak dikenal, memakai default.");
+    return fallback;
+}
 // ---------------- Baca file config bergaya INI sederhana ----------------
 // Format:
 //   # komentar
@@ -160,6 +179,9 @@ bool loadConfigFile(const std::string& path, Config& cfg) {
             else if (key == "gstreamer")      cfg.isGstreamer  = parseBool(value);
             else if (key == "reconnect_interval_ms") cfg.reconnectIntervalMs = std::stoi(value);
             else if (key == "show_overlay")   cfg.showOverlay  = parseBool(value);
+            else if (key == "encoder_type")   cfg.encoderType  = parseEncoderType(value, cfg.encoderType);
+            else if (key == "codec_type")     cfg.codecType    = parseCodecType(value, cfg.codecType);
+            else if (key == "bitrate_kbps")   cfg.bitrateKbps  = std::stoi(value);
             else logWarn("Key tidak dikenal di baris " + std::to_string(lineNo) + ": " + key);
         } catch (const std::exception& e) {
             logWarn("Gagal parsing baris " + std::to_string(lineNo) + " (" + key + "=" + value + "): " + e.what());
@@ -254,6 +276,9 @@ int main(int argc, char* argv[]) {
         else if (arg == "--reconnect-interval") cfg.reconnectIntervalMs = std::stoi(nextVal(std::to_string(cfg.reconnectIntervalMs).c_str()));
         else if (arg == "--overlay")    cfg.showOverlay = true;    // tampilkan teks info
         else if (arg == "--no-overlay") cfg.showOverlay = false;   // sembunyikan teks info (bbox tetap tampil)
+        else if (arg == "--encoder")    cfg.encoderType = parseEncoderType(nextVal(""), cfg.encoderType);
+        else if (arg == "--codec")      cfg.codecType   = parseCodecType(nextVal(""), cfg.codecType);
+        else if (arg == "--bitrate")    cfg.bitrateKbps = std::stoi(nextVal(std::to_string(cfg.bitrateKbps).c_str()));
     }
 
     logInfo("==========================================");
