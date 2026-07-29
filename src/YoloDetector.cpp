@@ -1,5 +1,5 @@
 #include "YoloDetector.h"
-
+#include <opencv2/core/cuda_stream_accessor.hpp>
 #include <fstream>
 #include <iostream>
 #include <numeric>
@@ -57,32 +57,6 @@ void TrtLogger::log(Severity severity, const char* msg) noexcept {
             break;
     }
 }
-
-// ==========================================================
-// Letterbox (sama seperti versi ONNX) - jaga aspect ratio + padding
-// ==========================================================
-namespace {
-cv::Mat letterbox(const cv::Mat& src, int targetSize, float& scale, int& padX, int& padY) {
-    int w = src.cols;
-    int h = src.rows;
-
-    scale = std::min(static_cast<float>(targetSize) / w, static_cast<float>(targetSize) / h);
-    int newW = static_cast<int>(w * scale);
-    int newH = static_cast<int>(h * scale);
-
-    padX = (targetSize - newW) / 2;
-    padY = (targetSize - newH) / 2;
-
-    cv::Mat resized;
-    cv::resize(src, resized, cv::Size(newW, newH));
-
-    cv::Mat out(targetSize, targetSize, src.type(), cv::Scalar(114, 114, 114));
-    resized.copyTo(out(cv::Rect(padX, padY, newW, newH)));
-
-    return out;
-}
-} // namespace
-
 // ==========================================================
 // Constructor / Destructor
 // ==========================================================
@@ -118,8 +92,8 @@ YoloDetector::YoloDetector(const std::string& enginePath,
 YoloDetector::~YoloDetector() {
     if (deviceInput_) cudaFree(deviceInput_);
     if (deviceOutput_) cudaFree(deviceOutput_);
+    if (hostOutput_) cudaFreeHost(hostOutput_);
     if (stream_) cudaStreamDestroy(stream_);
-    // context_, engine_, runtime_ otomatis dibersihkan oleh unique_ptr (TrtDestroy)
     logInfo("Detector dihentikan, resource dibersihkan.");
 }
 
@@ -346,17 +320,36 @@ void YoloDetector::allocateBuffers() {
     size_t inputVolume = static_cast<size_t>(inputC_) * inputH_ * inputW_;
     size_t outputVolume = static_cast<size_t>(outputChannels_) * outputBoxes_;
 
-    hostInput_.resize(inputVolume);
-    hostOutput_.resize(outputVolume);
+    hostOutputSize_ = outputVolume;
+
+    // Host output pakai pinned memory -> cudaMemcpyAsync device->host benar-benar async
+    CUDA_CHECK(cudaHostAlloc(&hostOutput_, outputVolume * sizeof(float), cudaHostAllocDefault));
 
     CUDA_CHECK(cudaMalloc(&deviceInput_, inputVolume * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&deviceOutput_, outputVolume * sizeof(float)));
 
-    // Daftarkan alamat device ke context lewat nama tensor (wajib untuk enqueueV3)
     context_->setTensorAddress(inputName_.c_str(), deviceInput_);
     context_->setTensorAddress(outputName_.c_str(), deviceOutput_);
 
-    logInfo("Buffer GPU dialokasikan. Input volume: " + std::to_string(inputVolume) +
+    // ---- Bungkus 3 GpuMat, masing-masing menunjuk ke bagian channel yang
+    //      berbeda di deviceInput_ (layout CHW: channel 0, lalu channel 1, dst).
+    //      cv::cuda::split() nanti menulis LANGSUNG ke sini -- tidak ada
+    //      copy tambahan device->device maupun device->host->device. ----
+    size_t channelBytes = static_cast<size_t>(inputH_) * inputW_ * sizeof(float);
+    for (int c = 0; c < 3; ++c) {
+        float* channelPtr = reinterpret_cast<float*>(
+            reinterpret_cast<char*>(deviceInput_) + c * channelBytes);
+        gpuInputChannels_[c] = cv::cuda::GpuMat(inputH_, inputW_, CV_32FC1, channelPtr);
+    }
+
+    // Wrapper cv::cuda::Stream di atas stream_ yang sama, supaya semua
+    // operasi cv::cuda:: dan cudaMemcpyAsync/enqueueV3 tetap satu urutan
+    // (sequential) di stream CUDA yang sama -- tidak perlu sync manual
+    // antara preprocessing dan inferensi.
+    cvStream_ = cv::cuda::StreamAccessor::wrapStream(stream_);
+
+    logInfo("Buffer GPU dialokasikan (pinned host output + GPU preprocessing). "
+            "Input volume: " + std::to_string(inputVolume) +
             " elemen, Output volume: " + std::to_string(outputVolume) + " elemen.");
 }
 
@@ -369,7 +362,9 @@ bool YoloDetector::isTargetClass(int classId) const {
 }
 
 // ==========================================================
-// Preprocessing: letterbox -> normalize -> HWC(BGR) ke CHW(RGB) float32
+// Preprocessing GPU: upload -> letterbox (resize+pad) -> BGR2RGB
+// -> normalize -> split channel LANGSUNG ke deviceInput_ (CHW)
+// Tidak ada data yang mampir ke host sama sekali di sini.
 // ==========================================================
 void YoloDetector::preprocess(const cv::Mat& frame, float& scale, int& padX, int& padY) {
     if (frame.empty()) {
@@ -377,22 +372,47 @@ void YoloDetector::preprocess(const cv::Mat& frame, float& scale, int& padX, int
         throw std::runtime_error("YoloDetector::preprocess: frame kosong");
     }
 
-    cv::Mat letterboxed = letterbox(frame, inputSize_, scale, padX, padY);
+    int w = frame.cols;
+    int h = frame.rows;
 
-    cv::Mat rgb;
-    cv::cvtColor(letterboxed, rgb, cv::COLOR_BGR2RGB);
-    rgb.convertTo(rgb, CV_32FC3, 1.0 / 255.0);
+    scale = std::min(static_cast<float>(inputSize_) / w, static_cast<float>(inputSize_) / h);
+    int newW = static_cast<int>(w * scale);
+    int newH = static_cast<int>(h * scale);
+    padX = (inputSize_ - newW) / 2;
+    padY = (inputSize_ - newH) / 2;
 
-    // HWC -> CHW
-    std::vector<cv::Mat> channels(3);
-    cv::split(rgb, channels);
+    // ---- Upload frame asli (BGR, CV_8UC3) ke GPU ----
+    gpuFrame_.upload(frame, cvStream_);
 
-    size_t channelSize = static_cast<size_t>(inputH_) * inputW_;
-    for (int c = 0; c < 3; ++c) {
-        std::memcpy(hostInput_.data() + c * channelSize, channels[c].data, channelSize * sizeof(float));
+    // ---- Resize ke ukuran target (sebelum padding) ----
+    cv::cuda::resize(gpuFrame_, gpuResized_, cv::Size(newW, newH), 0, 0, cv::INTER_LINEAR, cvStream_);
+
+    // ---- Siapkan canvas penuh inputSize x inputSize, isi warna padding 114 ----
+    if (gpuLetterboxed_.empty() ||
+        gpuLetterboxed_.size() != cv::Size(inputSize_, inputSize_) ||
+        gpuLetterboxed_.type() != frame.type()) {
+        gpuLetterboxed_.create(inputSize_, inputSize_, frame.type());
     }
-}
+    gpuLetterboxed_.setTo(cv::Scalar(114, 114, 114), cvStream_);
 
+    // ---- Copy hasil resize ke tengah canvas (area letterbox) ----
+    cv::cuda::GpuMat roi = gpuLetterboxed_(cv::Rect(padX, padY, newW, newH));
+    gpuResized_.copyTo(roi, cvStream_);
+
+    // ---- BGR -> RGB ----
+    cv::cuda::cvtColor(gpuLetterboxed_, gpuRgb_, cv::COLOR_BGR2RGB, 0, cvStream_);
+
+    // ---- uint8 -> float32, normalisasi [0,255] -> [0,1] ----
+    gpuRgb_.convertTo(gpuFloat_, CV_32FC3, 1.0 / 255.0, 0.0, cvStream_);
+
+    // ---- HWC -> CHW: split channel LANGSUNG ke deviceInput_ (via GpuMat wrapper) ----
+    cv::cuda::split(gpuFloat_, gpuInputChannels_.data(), cvStream_);
+
+    // Catatan: tidak ada cudaStreamSynchronize di sini secara sengaja --
+    // semua operasi di atas dan enqueueV3() nanti dijalankan berurutan
+    // di stream CUDA yang sama (stream_), jadi urutannya tetap terjamin
+    // tanpa perlu blocking manual di titik ini.
+}
 // ==========================================================
 // Inferensi utama
 // ==========================================================
@@ -400,11 +420,10 @@ std::vector<Detection> YoloDetector::infer(const cv::Mat& frameBGR) {
     float scale = 1.0f;
     int padX = 0, padY = 0;
 
+    // preprocess() sekarang menulis LANGSUNG ke deviceInput_ via GPU,
+    // jadi tidak ada lagi cudaMemcpyAsync host->device di sini.
     preprocess(frameBGR, scale, padX, padY);
 
-    // ---- Ambil snapshot parameter deteksi (thread-safe) sekali di awal,
-    //      supaya konsisten dipakai sepanjang satu pemanggilan infer() ini
-    //      walaupun setter dipanggil dari thread lain di tengah-tengah. ----
     float confThreshSnapshot;
     float nmsThreshSnapshot;
     std::vector<int> targetClassesSnapshot;
@@ -415,26 +434,21 @@ std::vector<Detection> YoloDetector::infer(const cv::Mat& frameBGR) {
         targetClassesSnapshot = targetClasses_;
     }
 
-    // ---- Copy input host -> device ----
-    CUDA_CHECK(cudaMemcpyAsync(deviceInput_, hostInput_.data(),
-                                hostInput_.size() * sizeof(float),
-                                cudaMemcpyHostToDevice, stream_));
-
-    // ---- Jalankan inferensi (enqueueV3, pengganti enqueueV2 yang sudah dihapus) ----
+    // ---- Jalankan inferensi (sequential di stream yang sama dengan preprocessing) ----
     bool ok = context_->enqueueV3(stream_);
     if (!ok) {
         logError("TensorRT enqueueV3 gagal dijalankan");
         throw std::runtime_error("TensorRT enqueueV3 gagal dijalankan");
     }
 
-    // ---- Copy output device -> host ----
-    CUDA_CHECK(cudaMemcpyAsync(hostOutput_.data(), deviceOutput_,
-                                hostOutput_.size() * sizeof(float),
+    // ---- Copy output device -> host (pinned memory, benar-benar async) ----
+    CUDA_CHECK(cudaMemcpyAsync(hostOutput_, deviceOutput_,
+                                hostOutputSize_ * sizeof(float),
                                 cudaMemcpyDeviceToHost, stream_));
 
     CUDA_CHECK(cudaStreamSynchronize(stream_));
 
-    // ---- Decode output (format sama seperti versi ONNX: [channels, boxes], channels = 4 + num_classes) ----
+    // ---- Decode output (sama seperti sebelumnya, tidak berubah) ----
     int numClasses = outputChannels_ - 4;
 
     auto isTargetClassLocal = [&targetClassesSnapshot](int classId) -> bool {
@@ -447,8 +461,6 @@ std::vector<Detection> YoloDetector::infer(const cv::Mat& frameBGR) {
     std::vector<float> scores;
     std::vector<int> classIds;
 
-    // hostOutput_ layout: [channel][box] artinya row-major channels x boxes
-    // row per channel: hostOutput_[c * outputBoxes_ + b]
     for (int b = 0; b < outputBoxes_; ++b) {
         float cx = hostOutput_[0 * outputBoxes_ + b];
         float cy = hostOutput_[1 * outputBoxes_ + b];

@@ -1,6 +1,9 @@
 #pragma once
 
 #include <opencv2/opencv.hpp>
+#include <opencv2/cudaarithm.hpp>
+#include <opencv2/cudawarping.hpp>
+#include <opencv2/cudaimgproc.hpp>
 #include <NvInfer.h>
 #include <cuda_runtime_api.h>
 
@@ -8,6 +11,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <array>
 
 // Hasil satu deteksi
 struct Detection {
@@ -32,11 +36,6 @@ struct TrtDestroy {
 
 class YoloDetector {
 public:
-    // enginePath    : path ke model .engine (hasil `yolo export format=engine`)
-    // inputSize     : ukuran input model (harus sama dengan saat export, misal 832)
-    // confThresh    : ambang confidence
-    // nmsThresh     : ambang NMS
-    // targetClasses : filter class id (kosong = semua class)
     YoloDetector(const std::string& enginePath,
                  int inputSize = 832,
                  float confThresh = 0.25f,
@@ -45,39 +44,25 @@ public:
 
     ~YoloDetector();
 
-    // Jalankan inferensi pada satu frame BGR
     std::vector<Detection> infer(const cv::Mat& frameBGR);
 
-    // Tidak dipakai untuk TensorRT (selalu GPU), disediakan agar kompatibel
-    // dengan pemanggilan lama (no-op).
     void enableCuda(bool useCuda) {}
 
     std::string getClassName(int classId) const;
     bool loadClassNames(const std::string& filename);
 
-    // -----------------------------------------------------------
-    // Setting parameter deteksi objek (lengkap, thread-safe)
-    // -----------------------------------------------------------
-    // Semua setter di bawah aman dipanggil dari thread lain saat infer()
-    // sedang berjalan di thread lain (dilindungi m_paramsMutex). Perubahan
-    // akan langsung berlaku pada pemanggilan infer() berikutnya.
-
-    // Ambang confidence minimum supaya deteksi dianggap valid
     void setConfThreshold(float confThresh);
     float getConfThreshold() const;
 
-    // Ambang IoU untuk Non-Maximum Suppression
     void setNmsThreshold(float nmsThresh);
     float getNmsThreshold() const;
 
-    // Filter class id yang ingin dideteksi (kosong = semua class)
     void setTargetClasses(const std::vector<int>& targetClasses);
     std::vector<int> getTargetClasses() const;
     void addTargetClass(int classId);
     void removeTargetClass(int classId);
-    void clearTargetClasses(); // kosongkan filter -> deteksi semua class kembali
+    void clearTargetClasses();
 
-    // Info-info bawaan model (read-only, ditentukan saat engine dimuat)
     int getInputSize() const { return inputSize_; }
     int getInputWidth() const { return inputW_; }
     int getInputHeight() const { return inputH_; }
@@ -86,9 +71,6 @@ public:
     std::vector<std::string> getClassNames() const { return classNames_; }
 
 private:
-    // -----------------------------------------------------------
-    // Logging, prefix [YoloDetector]
-    // -----------------------------------------------------------
     static void logInfo(const std::string& msg);
     static void logWarn(const std::string& msg);
     static void logError(const std::string& msg);
@@ -101,29 +83,37 @@ private:
     std::unique_ptr<nvinfer1::IExecutionContext, TrtDestroy> context_;
 
     cudaStream_t stream_ = nullptr;
+    cv::cuda::Stream cvStream_; // wrapper cv::cuda di atas stream_ yang sama
 
-    // TensorRT 10.x/11.x sudah tidak punya binding index (getTensorShape(int),
-    // enqueueV2, dst). Semua tensor I/O diakses lewat NAMA, bukan index.
     std::string inputName_;
     std::string outputName_;
 
-    // Dimensi tensor (diambil dari engine)
     int inputC_ = 3, inputH_ = 0, inputW_ = 0;
-    int outputChannels_ = 0; // 4 + num_classes
+    int outputChannels_ = 0;
     int outputBoxes_ = 0;
 
-    // Buffer device terpisah (bukan array binding index lagi), didaftarkan
-    // ke context lewat setTensorAddress() saat allocateBuffers()
     void* deviceInput_ = nullptr;
     void* deviceOutput_ = nullptr;
 
-    std::vector<float> hostInput_;
-    std::vector<float> hostOutput_;
+    // ---- Host output: pinned memory untuk transfer device->host lebih cepat ----
+    // Input TIDAK lagi lewat host sama sekali -- preprocessing dilakukan
+    // langsung di GPU dan hasilnya ditulis langsung ke deviceInput_.
+    float* hostOutput_ = nullptr;
+    size_t hostOutputSize_ = 0;
+
+    // ---- Buffer GPU untuk preprocessing (dipakai ulang tiap frame, dialokasikan sekali) ----
+    cv::cuda::GpuMat gpuFrame_;      // frame asli setelah upload
+    cv::cuda::GpuMat gpuResized_;    // hasil resize (letterbox, sebelum padding)
+    cv::cuda::GpuMat gpuLetterboxed_; // canvas penuh inputSize x inputSize (dengan padding)
+    cv::cuda::GpuMat gpuRgb_;        // hasil convert BGR->RGB
+    cv::cuda::GpuMat gpuFloat_;      // hasil convert ke float32 + normalisasi
+    // 3 GpuMat yang masing-masing "membungkus" (wrap) alamat memory di
+    // deviceInput_ per channel (CHW), supaya cv::cuda::split menulis
+    // LANGSUNG ke buffer input TensorRT tanpa copy tambahan.
+    std::array<cv::cuda::GpuMat, 3> gpuInputChannels_;
 
     int inputSize_;
 
-    // Parameter deteksi -- bisa diubah runtime lewat setter di atas,
-    // dilindungi mutex supaya aman dipanggil dari thread lain.
     mutable std::mutex paramsMutex_;
     float confThresh_;
     float nmsThresh_;
@@ -132,5 +122,6 @@ private:
     bool isTargetClass(int classId) const;
     void loadEngine(const std::string& enginePath);
     void allocateBuffers();
+    // preprocess sekarang full GPU, output-nya langsung deviceInput_
     void preprocess(const cv::Mat& frame, float& scale, int& padX, int& padY);
 };
