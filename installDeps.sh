@@ -122,8 +122,17 @@ if python3 -c "import tensorrt" &> /dev/null && command -v trtexec &> /dev/null;
 else
     apt-get install -y tensorrt python3-libnvinfer-dev 2>/dev/null \
         || fail "Gagal install TensorRT via apt. Cek: apt-cache search tensorrt"
-    pip3 install --no-cache-dir tensorrt 2>/dev/null \
-        || echo "  (python binding TensorRT biasanya ikut dari apt package di atas)"
+
+    # Install python binding ke venv milik user asli (bukan root/system)
+    if [ -n "$SUDO_USER" ]; then
+        REAL_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+        VENV_PIP="$REAL_HOME/SurveilanceCam/venv/bin/pip3"
+        if [ -x "$VENV_PIP" ]; then
+            sudo -u "$SUDO_USER" "$VENV_PIP" install --no-cache-dir \
+                --extra-index-url https://pypi.nvidia.com tensorrt \
+                || echo "  (coba symlink manual dari dist-packages ke venv)"
+        fi
+    fi
     ok "TensorRT terinstall (atau sudah tersedia)"
 fi
 
@@ -143,16 +152,39 @@ else
     ok "GStreamer terinstall:$MISSING_GST"
 fi
 
+# Deteksi versi GStreamer yang aktif
+if command -v gst-launch-1.0 &> /dev/null; then
+    GST_VERSION=$(gst-launch-1.0 --version | head -n1)
+    ok "GStreamer terdeteksi: $GST_VERSION"
+else
+    fail "gst-launch-1.0 tidak ditemukan setelah instalasi"
+fi
+
 # ============================================================
 # 7. OpenCV (Python)
 # ============================================================
-
 step "7. OPENCV (cek instalasi)"
 
 if python3 -c "import cv2" &> /dev/null; then
 
     OPENCV_VERSION=$(python3 -c "import cv2; print(cv2.__version__)" 2>/dev/null)
-    skip "OpenCV python sudah ada ($OPENCV_VERSION)"
+    CUDA_DEVICES=$(python3 -c "import cv2; print(cv2.cuda.getCudaEnabledDeviceCount())" 2>/dev/null)
+
+    if [ -n "$CUDA_DEVICES" ] && [ "$CUDA_DEVICES" -gt 0 ] 2>/dev/null; then
+        skip "OpenCV python sudah ada ($OPENCV_VERSION) — CUDA device terdeteksi: $CUDA_DEVICES"
+    else
+        skip "OpenCV python sudah ada ($OPENCV_VERSION) — TAPI CUDA device: 0 (kemungkinan build tanpa CUDA)"
+    fi
+
+    echo ""
+    echo "Info build OpenCV (CUDA/cuDNN/GStreamer/Version control):"
+    python3 -c "
+import cv2
+info = cv2.getBuildInformation()
+for line in info.split('\n'):
+    if any(k in line for k in ['CUDA', 'cuDNN', 'GStreamer', 'Version control']):
+        print(line)
+" 2>/dev/null || fail "Tidak bisa membaca build information OpenCV"
 
 else
 
@@ -166,39 +198,67 @@ else
 
 fi
 
-echo -e "${YELLOW}Catatan:${NC}"
-echo "OpenCV dari pip (opencv-python) tidak memiliki cv2.cuda."
-echo "Gunakan build source dengan CUDA untuk mendapatkan CUDA acceleration."
-
 # ============================================================
 # 8. Python & Package AI/ML
 # ============================================================
 step "8. PYTHON PACKAGE AI/ML"
-pip3 install --no-cache-dir --upgrade pip setuptools wheel
 
-check_pkg() { python3 -c "import $1" &> /dev/null; }
+PKG_CHECK=$(python3 -c "
+import importlib
+pkgs = ['pip', 'setuptools', 'wheel', 'numpy', 'torch', 'torchvision', 'ultralytics', 'onnx', 'onnxruntime']
+missing = []
+versions = []
+for p in pkgs:
+    try:
+        m = importlib.import_module(p)
+        v = getattr(m, '__version__', 'unknown')
+        versions.append(f'{p} ({v})')
+    except ImportError:
+        missing.append(p)
+print('MISSING=' + ','.join(missing))
+print('VERSIONS=' + ', '.join(versions))
+")
 
-if check_pkg numpy && check_pkg torch && check_pkg torchvision && check_pkg ultralytics && check_pkg onnx && check_pkg onnxruntime; then
-    skip "numpy, torch, torchvision, ultralytics, onnx, onnxruntime sudah terinstall"
+MISSING_PKG=$(echo "$PKG_CHECK" | grep '^MISSING=' | cut -d'=' -f2)
+INSTALLED_VER=$(echo "$PKG_CHECK" | grep '^VERSIONS=' | cut -d'=' -f2)
+
+if [ -z "$MISSING_PKG" ]; then
+    skip "Semua package sudah terinstall: $INSTALLED_VER"
 else
+    echo "Package belum lengkap, yang hilang: $MISSING_PKG"
+
+    # Upgrade pip/setuptools/wheel hanya kalau ada yang hilang dari daftar itu
+    if echo "$MISSING_PKG" | grep -qE 'pip|setuptools|wheel'; then
+        pip3 install --no-cache-dir --upgrade pip setuptools wheel
+    fi
+
+    # Torch ecosystem — HARUS dari index CUDA khusus
+    pip3 install --no-cache-dir \
+        torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+    # Sisanya — dari PyPI biasa
     pip3 install --no-cache-dir \
         numpy \
-        ultralytics 
-        # torch torchvision --index-url https://download.pytorch.org/whl/cu124 \
-        # onnx \
-        # onnxruntime-gpu
-    ok "Package AI/ML terinstall"
-fi
+        ultralytics \
+        onnx \
+        onnxruntime-gpu
 
-# ============================================================
-# 9. Tesseract OCR (opsional, untuk ANPR)
-# ============================================================
-step "9. TESSERACT OCR"
-if command -v tesseract &> /dev/null; then
-    skip "Tesseract sudah ada ($(tesseract --version | head -n1))"
-else
-    apt-get install -y tesseract-ocr libtesseract-dev
-    ok "Tesseract terinstall"
+    FINAL_VER=$(python3 -c "
+import importlib
+pkgs = ['pip', 'setuptools', 'wheel', 'numpy', 'torch', 'torchvision', 'ultralytics', 'onnx', 'onnxruntime']
+for p in pkgs:
+    try:
+        m = importlib.import_module(p)
+        v = getattr(m, '__version__', 'unknown')
+        print(f'  {p:<12}: {v}')
+    except ImportError:
+        print(f'  {p:<12}: GAGAL DIIMPORT')
+")
+    echo ""
+    echo "Versi terinstall:"
+    echo "$FINAL_VER"
+
+    ok "Package AI/ML terinstall"
 fi
 
 # ============================================================
@@ -209,5 +269,5 @@ echo -e "${GREEN}Instalasi selesai.${NC}"
 if [ "$REBOOT_NEEDED" -eq 1 ]; then
     echo -e "${RED}PENTING: Driver NVIDIA baru diinstall. REBOOT sistem sekarang, lalu jalankan check_deps.sh untuk verifikasi.${NC}"
 fi
-echo "Jalankan check_deps.sh untuk verifikasi semua komponen."
+# echo "Jalankan check_deps.sh untuk verifikasi semua komponen."
 separator
