@@ -5,6 +5,21 @@ Pipeline native **GStreamer C++**:
 ```
 Input (USB UVC / RTSP) → capture (appsink) → inferensi YOLO (OpenCV DNN) → output RTSP server (appsrc → x264enc → rtph264pay)
 ```
+## 1. Buat VENV & Install YOLO
+
+```bash
+python3 -m venv venv
+source /path/to/venv/bin/activate
+
+git submodule update --init --recursive
+
+pip install ultralytics numpy
+
+# pastikan venv aktif dulu
+
+pip install --upgrade pip
+pip install --extra-index-url https://pypi.nvidia.com tensorrt
+```
 
 ## 1. Dependency
 

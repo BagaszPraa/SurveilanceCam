@@ -4,12 +4,12 @@
 # ==========================================================
 
 # ---- KONFIGURASI ----
-MODEL_PATH="models/visDrone.pt"   # path model .pt yang mau dikonversi
+MODEL_PATH="models/best.pt"   # path model .pt yang mau dikonversi
 IMG_SIZE=832                      # ukuran input image (samakan dengan saat inference)
 HALF=true                         # true = pakai FP16 (lebih cepat, sedikit turun akurasi)
 DYNAMIC=false                     # true jika ingin dynamic input shape
 DEVICE=0                          # index GPU yang dipakai (0 = GPU pertama)
-WORKSPACE=4                       # ukuran workspace TensorRT dalam GB
+WORKSPACE=4                      # ukuran workspace TensorRT dalam GB
 
 # ---- CEK APAKAH FILE MODEL ADA ----
 if [ ! -f "$MODEL_PATH" ]; then

@@ -1,8 +1,8 @@
 from ultralytics import YOLO
 from pathlib import Path
 
-# Path model
-model_path = Path("models/yolo11s.pt")
+import tensorrt
+model_path = Path("models/best.pt")
 
 # Load model
 model = YOLO(str(model_path))
