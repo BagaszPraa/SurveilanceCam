@@ -205,16 +205,28 @@ step "8. PYTHON PACKAGE AI/ML"
 
 PKG_CHECK=$(python3 -c "
 import importlib
-pkgs = ['pip', 'setuptools', 'wheel', 'numpy', 'torch', 'torchvision', 'ultralytics', 'onnx', 'onnxruntime']
+# format: (nama_import, nama_display)
+pkgs = [
+    ('pip', 'pip'),
+    ('setuptools', 'setuptools'),
+    ('wheel', 'wheel'),
+    ('numpy', 'numpy'),
+    ('torch', 'torch'),
+    ('torchvision', 'torchvision'),
+    ('ultralytics', 'ultralytics'),
+    ('onnx', 'onnx'),
+    ('onnxruntime', 'onnxruntime'),
+    ('modelopt', 'nvidia-modelopt'),
+]
 missing = []
 versions = []
-for p in pkgs:
+for mod_name, disp_name in pkgs:
     try:
-        m = importlib.import_module(p)
+        m = importlib.import_module(mod_name)
         v = getattr(m, '__version__', 'unknown')
-        versions.append(f'{p} ({v})')
+        versions.append(f'{disp_name} ({v})')
     except ImportError:
-        missing.append(p)
+        missing.append(disp_name)
 print('MISSING=' + ','.join(missing))
 print('VERSIONS=' + ', '.join(versions))
 ")
@@ -241,18 +253,30 @@ else
         numpy \
         ultralytics \
         onnx \
-        onnxruntime-gpu
+        onnxruntime-gpu \
+        "nvidia-modelopt[onnx]>=0.44"
 
     FINAL_VER=$(python3 -c "
 import importlib
-pkgs = ['pip', 'setuptools', 'wheel', 'numpy', 'torch', 'torchvision', 'ultralytics', 'onnx', 'onnxruntime']
-for p in pkgs:
+pkgs = [
+    ('pip', 'pip'),
+    ('setuptools', 'setuptools'),
+    ('wheel', 'wheel'),
+    ('numpy', 'numpy'),
+    ('torch', 'torch'),
+    ('torchvision', 'torchvision'),
+    ('ultralytics', 'ultralytics'),
+    ('onnx', 'onnx'),
+    ('onnxruntime', 'onnxruntime'),
+    ('modelopt', 'nvidia-modelopt'),
+]
+for mod_name, disp_name in pkgs:
     try:
-        m = importlib.import_module(p)
+        m = importlib.import_module(mod_name)
         v = getattr(m, '__version__', 'unknown')
-        print(f'  {p:<12}: {v}')
+        print(f'  {disp_name:<16}: {v}')
     except ImportError:
-        print(f'  {p:<12}: GAGAL DIIMPORT')
+        print(f'  {disp_name:<16}: GAGAL DIIMPORT')
 ")
     echo ""
     echo "Versi terinstall:"
