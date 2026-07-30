@@ -1,44 +1,5 @@
-// ==========================================================
-// main.cpp
-// yolo_local_test - Versi tanpa GStreamer, untuk testing lokal.
-//   Input (USB webcam via OpenCV VideoCapture)
-//   -> inferensi YOLO (TensorRT engine)
-//   -> stream hasil via RTSP server
-//
-// Konfigurasi dibaca dari file eksternal (default: config.ini)
-// supaya tidak perlu compile ulang tiap kali ganti setting.
-// Urutan prioritas nilai konfigurasi:
-//   default (hardcoded) < isi file config < argumen CLI
-//
-// CATATAN RESOLUSI (dinamis terhadap source):
-//   cfg.width/cfg.height sekarang hanya dipakai sebagai "permintaan awal"
-//   (mis. untuk cap.set() di kamera V4L2). Resolusi yang BENAR-BENAR dipakai
-//   untuk RTSP server & seluruh pipeline ditentukan dari frame pertama yang
-//   berhasil diambil dari source (probe frame). Jadi kalau source (kamera,
-//   file video, atau RTSP input) punya resolusi native yang beda dari
-//   config, program akan otomatis menyesuaikan -- tidak dipaksa resize ke
-//   nilai config.
-//
-// CATATAN RETRY/RECONNECT (input belum tersedia / terputus):
-//   Program TIDAK langsung berhenti kalau input belum tersedia saat start,
-//   atau tiba-tiba terputus saat runtime (mis. USB webcam kecabut, RTSP
-//   source mati sebentar). Sebagai gantinya program akan terus mencoba
-//   menyambung ulang tiap `reconnect_interval_ms` (default 2000ms), dengan
-//   log peringatan periodik (tidak setiap percobaan, supaya tidak spam),
-//   dan RTSP server tetap hidup menunggu source kembali tersedia.
-//
-// CATATAN OVERLAY INFO (bukan bounding box):
-//   `show_overlay` (config.ini) atau `--overlay`/`--no-overlay` (CLI)
-//   mengatur tampil/tidaknya teks info (Count/Infer ms/Capture FPS/Display
-//   FPS/Resolusi) di pojok kiri atas frame. Bounding box + label hasil
-//   deteksi TIDAK terpengaruh oleh setting ini -- selalu digambar.
-// ==========================================================
 
 #include "main.h"
-
-#include <opencv2/opencv.hpp>
-#include "YoloDetector.h"
-#include "rtspServer.h"
 
 #include <iostream>
 #include <fstream>
@@ -64,6 +25,31 @@ void logWarn(const std::string& msg) {
 
 void logError(const std::string& msg) {
     std::cerr << "[Main] [ERROR] " << msg << std::endl;
+}
+struct RuntimeAIConfig {
+    std::mutex mtx;
+    float confidenceThreshold;
+    std::set<int> targetClasses;   // kosong = semua class diizinkan
+};
+
+std::vector<Detection> applyRuntimeFilter(const std::vector<Detection>& raw,
+                                           RuntimeAIConfig& runtimeCfg) {
+    float threshold;
+    std::set<int> classes;
+    {
+        std::lock_guard<std::mutex> lock(runtimeCfg.mtx);
+        threshold = runtimeCfg.confidenceThreshold;
+        classes = runtimeCfg.targetClasses;
+    }
+ 
+    std::vector<Detection> filtered;
+    filtered.reserve(raw.size());
+    for (const auto& d : raw) {
+        if (d.confidence < threshold) continue;
+        if (!classes.empty() && classes.count(d.classId) == 0) continue;
+        filtered.push_back(d);
+    }
+    return filtered;
 }
 
 // ---------------- Helper: trim spasi di kiri/kanan string ----------------
@@ -182,6 +168,8 @@ bool loadConfigFile(const std::string& path, Config& cfg) {
             else if (key == "encoder_type")   cfg.encoderType  = parseEncoderType(value, cfg.encoderType);
             else if (key == "codec_type")     cfg.codecType    = parseCodecType(value, cfg.codecType);
             else if (key == "bitrate_kbps")   cfg.bitrateKbps  = std::stoi(value);
+            else if (key == "api_port")   cfg.apiPort = std::stoi(value);
+            else if (key == "api_host")   cfg.apiHost = value;
             else logWarn("Key tidak dikenal di baris " + std::to_string(lineNo) + ": " + key);
         } catch (const std::exception& e) {
             logWarn("Gagal parsing baris " + std::to_string(lineNo) + " (" + key + "=" + value + "): " + e.what());
@@ -279,6 +267,8 @@ int main(int argc, char* argv[]) {
         else if (arg == "--encoder")    cfg.encoderType = parseEncoderType(nextVal(""), cfg.encoderType);
         else if (arg == "--codec")      cfg.codecType   = parseCodecType(nextVal(""), cfg.codecType);
         else if (arg == "--bitrate")    cfg.bitrateKbps = std::stoi(nextVal(std::to_string(cfg.bitrateKbps).c_str()));
+        else if (arg == "--api-port") cfg.apiPort = std::stoi(nextVal(std::to_string(cfg.apiPort).c_str()));
+        else if (arg == "--api-host") cfg.apiHost = nextVal(cfg.apiHost.c_str()); 
     }
 
     logInfo("==========================================");
@@ -350,7 +340,48 @@ int main(int argc, char* argv[]) {
         logError("Gagal load model: " + cfg.modelPath + " | Pesan: " + e.what());
         return 1;
     }
+    // ---- Runtime AI config (thread-safe), state awal dari cfg ----
+    RuntimeAIConfig runtimeAiConfig;
+    runtimeAiConfig.confidenceThreshold = cfg.confThresh;
+    runtimeAiConfig.targetClasses = std::set<int>(cfg.targetClasses.begin(), cfg.targetClasses.end());
 
+    // ---- APIController: WebSocket server untuk GCS ----
+    APIController apiController;
+
+    apiController.setConfigCommandHandler([&](const AIConfig& newCfg) -> bool {
+        std::lock_guard<std::mutex> lock(runtimeAiConfig.mtx);
+        runtimeAiConfig.confidenceThreshold = static_cast<float>(newCfg.confidence_threshold);
+
+        // Konvensi: classes_enabled dari GCS berisi class ID dalam bentuk
+        // string, mis. {"0", "2"} -- konsisten dengan format cfg.targetClasses
+        // di config.ini (comma-separated int). Kalau butuh nama class
+        // ("person","vehicle"), perlu mapping nama->id di sisi GCS atau di
+        // sini (tergantung apakah YoloDetector expose daftar nama class).
+        runtimeAiConfig.targetClasses.clear();
+        for (const auto& s : newCfg.classes_enabled) {
+            try {
+                runtimeAiConfig.targetClasses.insert(std::stoi(s));
+            } catch (const std::exception&) {
+                logWarn("classes_enabled berisi nilai non-numerik, diabaikan: " + s);
+            }
+        }
+
+        logInfo("Config AI diperbarui via APIController: threshold=" +
+                std::to_string(runtimeAiConfig.confidenceThreshold) +
+                ", jumlah class aktif=" + std::to_string(runtimeAiConfig.targetClasses.size()));
+        return true;
+    });
+
+    // run() itu blocking (io_service.run()), jadi wajib di thread terpisah.
+    // detach() dipakai di sini karena APIController belum punya mekanisme
+    // stop() yang graceful -- kalau perlu shutdown bersih, tambahkan method
+    // stop() yang panggil server_.stop_listening() + server_.stop().
+    std::thread apiThread([&apiController, &cfg]() {
+        apiController.run(static_cast<uint16_t>(cfg.apiPort));
+    });
+    apiThread.detach();
+
+    logInfo("APIController berjalan di port " + std::to_string(cfg.apiPort));
     logInfo("Kamera/berkas terbuka.");
 
     // ---- PROBE FRAME: deteksi resolusi asli dari source (retry sampai berhasil, TIDAK exit) ----
@@ -524,6 +555,7 @@ int main(int argc, char* argv[]) {
     int displayFrameCount = 0;
     double displayFps = 0.0;
     auto displayFpsWindowStart = std::chrono::steady_clock::now();
+    long frameId = 0;
 
     while (captureRunning) {
         // Tunggu sampai frame tersedia (frameAvailable bisa jadi false
@@ -541,10 +573,37 @@ int main(int argc, char* argv[]) {
         }
 
         auto t0 = std::chrono::steady_clock::now();
-        std::vector<Detection> detections = detector->infer(frame);
+        std::vector<Detection> rawDetections = detector->infer(frame);
         auto t1 = std::chrono::steady_clock::now();
         double inferMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
+        // Terapkan threshold/class filter yang bisa diubah live lewat APIController.
+        // (Opsi B: post-inference filter. Kalau pakai Opsi A / setter di
+        // YoloDetector, baris ini tidak perlu -- filtering sudah terjadi
+        // di dalam detector->infer() sendiri.)
+        std::vector<Detection> detections = applyRuntimeFilter(rawDetections, runtimeAiConfig);
+
+        // ---- Broadcast hasil deteksi ke GCS via APIController ----
+        {
+            std::vector<ApiDetection> apiDets;
+            apiDets.reserve(detections.size());
+            int idx = 0;
+            for (const auto& det : detections) {
+                ApiDetection ad;
+                ad.id = "det_" + std::to_string(frameId) + "_" + std::to_string(idx++);
+                ad.cls = detector->getClassName(det.classId);
+                ad.confidence = det.confidence;
+                // Normalisasi bbox ke 0..1 supaya independen dari resolusi
+                // (GCS tinggal kalikan lebar/tinggi video player-nya sendiri).
+                ad.bbox_x = static_cast<double>(det.box.x) / frame.cols;
+                ad.bbox_y = static_cast<double>(det.box.y) / frame.rows;
+                ad.bbox_w = static_cast<double>(det.box.width)  / frame.cols;
+                ad.bbox_h = static_cast<double>(det.box.height) / frame.rows;
+                apiDets.push_back(ad);
+            }
+            apiController.broadcastDetections(frameId, frame.cols, frame.rows, apiDets, inferMs);
+            ++frameId;
+        }
         // ---- Bounding box + label hasil deteksi (SELALU digambar, tidak
         //      dipengaruhi cfg.showOverlay -- itu cuma untuk teks info) ----
         for (const auto& det : detections) {
@@ -568,12 +627,23 @@ int main(int argc, char* argv[]) {
         ++displayFrameCount;
         auto now = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration<double>(now - displayFpsWindowStart).count();
+
         if (elapsed >= 1.0) {
             displayFps = displayFrameCount / elapsed;
             displayFrameCount = 0;
             displayFpsWindowStart = now;
-        }
 
+            // ---- Broadcast status AI engine ke GCS ----
+            AIConfig statusCfg;
+            {
+                std::lock_guard<std::mutex> lock(runtimeAiConfig.mtx);
+                statusCfg.confidence_threshold = runtimeAiConfig.confidenceThreshold;
+                for (int c : runtimeAiConfig.targetClasses) {
+                    statusCfg.classes_enabled.insert(std::to_string(c));
+                }
+            }
+            apiController.broadcastStatus(cfg.modelPath, displayFps, statusCfg);
+        }
         // ---- Info overlay (teks Count/Infer/FPS/Resolusi) -- bisa
         //      dimatikan lewat cfg.showOverlay, TIDAK memengaruhi bbox di atas ----
         if (cfg.showOverlay) {

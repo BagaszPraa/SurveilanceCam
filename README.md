@@ -8,9 +8,11 @@ Input (USB UVC / RTSP) → capture (appsink) → inferensi YOLO (OpenCV DNN) →
 ## 1. Buat VENV & Install YOLO
 
 ```bash
+
+sudo apt install libboost-system-dev nlohmann-json3-dev
+
 python3 -m venv venv
 source /path/to/venv/bin/activate
-
 git submodule update --init --recursive
 
 pip install ultralytics numpy

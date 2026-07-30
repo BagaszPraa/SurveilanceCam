@@ -23,11 +23,12 @@
 
 #pragma once
 
-#include <opencv2/opencv.hpp>
-#include "rtspServer.h"   // untuk EncoderType, CodecType
-
 #include <string>
 #include <vector>
+#include <opencv2/opencv.hpp>
+#include "YoloDetector.h"
+#include "rtspServer.h"
+#include "APIController.h"
 
 // ---------------- Konfigurasi Global ----------------
 // Bisa diatur lewat file config.ini ATAU argumen CLI (CLI menang kalau ada dua-duanya).
@@ -50,6 +51,9 @@ struct Config {
     int bitrateKbps         = 2000;
     int reconnectIntervalMs = 2000;    // jeda antar percobaan reconnect saat input belum/tidak tersedia
     bool showOverlay        = true;    // tampilkan teks info (Count/Infer/FPS/Resolusi) -- TIDAK memengaruhi bbox
+    // --- Tambahan untuk APIController ---
+    int apiPort             = 8765;
+    std::string apiHost     = "0.0.0.0";  // bind ke semua interface
 };
 
 // ---------------- Helper: trim spasi di kiri/kanan string ----------------

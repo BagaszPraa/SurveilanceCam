@@ -7,6 +7,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(PkgConfig REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(CUDAToolkit REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system)
+find_package(Threads REQUIRED)
+
+# nlohmann/json dipakai oleh APIController untuk serialize/parse pesan
+# WebSocket (deteksi AI, command config, dsb).
+#   sudo apt install nlohmann-json3-dev
+find_package(nlohmann_json REQUIRED)
 
 # Modul GStreamer yang dibutuhkan:
 pkg_check_modules(GST REQUIRED
@@ -22,6 +29,13 @@ pkg_check_modules(GST REQUIRED
 # Kalau install manual (tar.gz dari NVIDIA Developer), set path lewat:
 #   cmake -DTENSORRT_DIR=/path/ke/TensorRT-x.y.z ..
 set(TENSORRT_DIR "" CACHE PATH "Path ke instalasi TensorRT manual (kosongkan kalau pakai JetPack/apt)")
+
+# ---- Lokasi websocketpp ----
+# Header-only, dipakai oleh APIController untuk WebSocket server.
+# Default: deps/websocketapp (relatif ke root project).
+# Kalau lokasinya beda, override lewat:
+#   cmake -DWEBSOCKETPP_INCLUDE_DIR=/path/lain ..
+set(WEBSOCKETPP_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/deps/websocketapp" CACHE PATH "Path to websocketpp headers")
 
 if(TENSORRT_DIR)
     set(TENSORRT_INCLUDE_DIR ${TENSORRT_DIR}/include)
@@ -44,6 +58,7 @@ include_directories(
     ${OpenCV_INCLUDE_DIRS}
     ${TENSORRT_INCLUDE_DIR}
     ${CMAKE_SOURCE_DIR}/include
+    ${WEBSOCKETPP_INCLUDE_DIR}
 )
 
 link_directories(${GST_LIBRARY_DIRS} ${TENSORRT_LIB_DIR})
@@ -52,6 +67,7 @@ add_executable(SurveilanceCam
     src/main.cpp
     src/YoloDetector.cpp
     src/rtspServer.cpp
+    src/APIController.cpp
 )
 
 target_compile_options(SurveilanceCam PUBLIC ${GST_CFLAGS_OTHER})
@@ -61,5 +77,8 @@ target_link_libraries(SurveilanceCam
     ${OpenCV_LIBS}
     ${NVINFER_LIB}
     CUDA::cudart
+    Boost::system
+    Threads::Threads
+    nlohmann_json::nlohmann_json
     pthread
 )
