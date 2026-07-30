@@ -41,9 +41,10 @@ public:
         int height,
         int fps,
         const std::string& host,
-        EncoderType encoderType = EncoderType::NVIDIA_GPU,
-        CodecType codecType     = CodecType::H265,
-        int bitrateKbps         = 4000);
+        EncoderType encoderType,
+        CodecType codecType,
+        int bitrateKbps
+    );
 
     ~RtspServer();
 

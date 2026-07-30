@@ -61,7 +61,7 @@ void APIController::run(uint16_t port) {
     server_.listen(boost::asio::ip::tcp::v4(), port);
     server_.start_accept();
     server_.get_alog().write(websocketpp::log::alevel::app,
-        "APIController listening on port " + std::to_string(port));
+        "APIController berjalan di port " + std::to_string(port));
     server_.run();
 }
 

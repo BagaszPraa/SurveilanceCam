@@ -15,6 +15,7 @@
 #include "rtspServer.h"
 #include "ConfigManager.h"
 #include "APIController.h"
+#include "SourceHandler.h"
 
 // ---------------- Logging, prefix [Main] ----------------
 void logInfo(const std::string& msg) {
@@ -56,82 +57,16 @@ std::vector<Detection> applyRuntimeFilter(const std::vector<Detection>& raw,
     return filtered;
 }
 
-// tambahkan kembali helper ini
-bool isNetworkStream(const std::string& src) {
-    return src.rfind("rtsp://", 0) == 0 ||
-           src.rfind("rtmp://", 0) == 0 ||
-           src.rfind("http://", 0) == 0 ||
-           src.rfind("https://", 0) == 0;
-}
-
-// Pipeline GStreamer untuk RTSP input via OpenCV appsink.
-// latency=0 supaya jitter buffer rtspsrc minim (low-latency).
-// videoconvert + BGR karena OpenCV cv::Mat default-nya BGR.
-// drop=true + max-buffers=1 di appsink supaya selalu ambil frame TERBARU,
-// bukan antre (mirip pola "latest frame" yang sudah dipakai di capture thread).
-std::string buildRtspGstPipeline(const std::string& url) {
-    return
-        "rtspsrc location=" + url + " latency=0 protocols=tcp "
-        "! rtph264depay "
-        "! h264parse "
-        "! avdec_h264 "
-        "! videoconvert "
-        "! video/x-raw,format=BGR "
-        "! appsink drop=true max-buffers=1 sync=false";
-}
-
-// ---------------- Helper: buka/ulang-buka VideoCapture sesuai konfigurasi ----------------
-// Dipakai baik untuk membuka input pertama kali maupun untuk reconnect
-// ketika input hilang/terputus di tengah jalan. Mengembalikan false
-// (bukan exit program) kalau gagal, supaya pemanggil bisa retry.
-bool openCapture(const Config& cfg, cv::VideoCapture& cap) {
-    bool isNumericIndex = !cfg.inputSource.empty() &&
-        std::all_of(cfg.inputSource.begin(), cfg.inputSource.end(), ::isdigit);
-
-    if (cfg.isGstreamer) {
-        std::string gstPipeline = isNetworkStream(cfg.inputSource)
-            ? buildRtspGstPipeline(cfg.inputSource)   // user cuma kasih URL polos -> auto-build pipeline
-            : cfg.inputSource;                        // user sudah kasih pipeline GStreamer lengkap -> pakai apa adanya
-        cap.open(gstPipeline, cv::CAP_GSTREAMER);
-    } else if (isNumericIndex) {
-        // USB webcam via index
-        cap.open(std::stoi(cfg.inputSource), cv::CAP_V4L2);
-    } else {
-        // path device (/dev/video0) atau file video lokal
-        cap.open(cfg.inputSource, cv::CAP_V4L2);
-    }
-
-    if (!cap.isOpened()) {
-        return false;
-    }
-
-    if (!cfg.isGstreamer) {
-        // Properti ini cuma relevan untuk device kamera lokal (V4L2).
-        // Ini hanya "permintaan" ke driver -- resolusi FINAL tetap dideteksi
-        // ulang dari frame asli (probe frame), karena driver/kamera bisa
-        // saja tidak persis menuruti angka yang diminta.
-        cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
-        cap.set(cv::CAP_PROP_FRAME_WIDTH, cfg.width);
-        cap.set(cv::CAP_PROP_FRAME_HEIGHT, cfg.height);
-        cap.set(cv::CAP_PROP_FPS, cfg.fps);
-    }
-
-    return true;
-}
 
 int main(int argc, char* argv[]) {
-    // ---- Load config: file config.ini + override CLI + log ringkasan ----
-    // Semua detail parsing (loadConfigFile, parsing argumen CLI, dsb)
-    // sudah dipindah ke ConfigManager. Cukup satu baris ini.
     Config cfg = ConfigManager::load(argc, argv);
-
-    // ---- Buka input via OpenCV VideoCapture (retry sampai berhasil, TIDAK exit) ----
+    SourceHandler sourceHandler;
     cv::VideoCapture cap;
     {
         int attempt = 0;
         while (true) {
             ++attempt;
-            if (openCapture(cfg, cap)) {
+            if (sourceHandler.openCapture(cfg, cap)) {
                 logInfo("Input berhasil dibuka pada percobaan ke-" + std::to_string(attempt));
                 break;
             }
@@ -218,8 +153,8 @@ int main(int argc, char* argv[]) {
     });
     apiThread.detach();
 
-    logInfo("APIController berjalan di port " + std::to_string(cfg.apiPort));
-    logInfo("Kamera/berkas terbuka.");
+    // logInfo("APIController berjalan di port " + std::to_string(cfg.apiPort));
+    // logInfo("Kamera/berkas terbuka.");
 
     // ---- PROBE FRAME: deteksi resolusi asli dari source (retry sampai berhasil, TIDAK exit) ----
     cv::Mat probeFrame;
@@ -241,7 +176,7 @@ int main(int argc, char* argv[]) {
                 logWarn("Koneksi ke input terputus saat probe, mencoba membuka ulang...");
                 cap.release();
                 int reopenAttempt = 0;
-                while (!openCapture(cfg, cap)) {
+                while (!sourceHandler.openCapture(cfg, cap)) {
                     ++reopenAttempt;
                     if (reopenAttempt == 1 || reopenAttempt % 10 == 0) {
                         logWarn("Percobaan buka ulang ke-" + std::to_string(reopenAttempt) +
@@ -316,7 +251,7 @@ int main(int argc, char* argv[]) {
                 cap.release();
 
                 int attempt = 0;
-                while (captureRunning && !openCapture(cfg, cap)) {
+                while (captureRunning && !sourceHandler.openCapture(cfg, cap)) {
                     ++attempt;
                     if (attempt == 1 || attempt % 10 == 0) {
                         logWarn("Reconnect percobaan ke-" + std::to_string(attempt) +

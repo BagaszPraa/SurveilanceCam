@@ -69,6 +69,7 @@ add_executable(SurveilanceCam
     src/rtspServer.cpp
     src/APIController.cpp
     src/ConfigManager.cpp
+    src/SourceHandler.cpp
 )
 
 target_compile_options(SurveilanceCam PUBLIC ${GST_CFLAGS_OTHER})
