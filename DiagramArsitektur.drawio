@@ -1,6 +1,6 @@
 <mxfile host="app.diagrams.net" agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36">
   <diagram name="Halaman-1" id="GXBlwwe0xZ_bLv-1iO72">
-    <mxGraphModel dx="930" dy="547" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+    <mxGraphModel dx="1123" dy="661" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -51,7 +51,7 @@
           </mxGeometry>
         </mxCell>
         <mxCell id="njztEqf3B5ze47H1axA0-4" parent="1" style="ellipse;whiteSpace=wrap;html=1;" value="APIController&lt;div&gt;WebSocketApp&lt;/div&gt;" vertex="1">
-          <mxGeometry height="80" width="120" x="50" y="320" as="geometry" />
+          <mxGeometry height="80" width="120" x="30" y="320" as="geometry" />
         </mxCell>
         <mxCell id="njztEqf3B5ze47H1axA0-6" parent="1" style="ellipse;whiteSpace=wrap;html=1;" value="OUTPUT&lt;div&gt;(RtspServer)&lt;/div&gt;" vertex="1">
           <mxGeometry height="80" width="120" x="407.5" y="550" as="geometry" />
@@ -91,14 +91,30 @@
         <mxCell id="3tIG_mFYL-bsZIRshKL6-1" parent="1" style="ellipse;whiteSpace=wrap;html=1;" value="SourceHandler" vertex="1">
           <mxGeometry height="80" width="120" x="407.5" y="90" as="geometry" />
         </mxCell>
-        <mxCell id="3tIG_mFYL-bsZIRshKL6-3" edge="1" parent="1" source="3tIG_mFYL-bsZIRshKL6-2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;startArrow=classic;startFill=1;" target="njztEqf3B5ze47H1axA0-4">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
         <mxCell id="3tIG_mFYL-bsZIRshKL6-2" parent="1" style="shape=document;whiteSpace=wrap;html=1;boundedLbl=1;" value="Config.ini" vertex="1">
           <mxGeometry height="80" width="120" x="30" y="50" as="geometry" />
         </mxCell>
         <mxCell id="3tIG_mFYL-bsZIRshKL6-16" parent="1" style="ellipse;whiteSpace=wrap;html=1;" value="YoloDetector" vertex="1">
           <mxGeometry height="80" width="120" x="407.5" y="320" as="geometry" />
+        </mxCell>
+        <mxCell id="3tIG_mFYL-bsZIRshKL6-39" edge="1" parent="1" source="3tIG_mFYL-bsZIRshKL6-38" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;startArrow=classic;startFill=1;" target="3tIG_mFYL-bsZIRshKL6-2" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="3tIG_mFYL-bsZIRshKL6-40" connectable="0" parent="3tIG_mFYL-bsZIRshKL6-39" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="Load / Save" vertex="1">
+          <mxGeometry relative="1" x="0.0286" y="-3" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="3tIG_mFYL-bsZIRshKL6-41" edge="1" parent="1" source="3tIG_mFYL-bsZIRshKL6-38" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;startArrow=classic;startFill=1;" target="njztEqf3B5ze47H1axA0-4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="3tIG_mFYL-bsZIRshKL6-42" connectable="0" parent="3tIG_mFYL-bsZIRshKL6-41" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="Struct Object" vertex="1">
+          <mxGeometry relative="1" x="0.1267" y="3" as="geometry">
+            <mxPoint x="-3" y="-3" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="3tIG_mFYL-bsZIRshKL6-38" parent="1" style="ellipse;whiteSpace=wrap;html=1;" value="Config Manager" vertex="1">
+          <mxGeometry height="80" width="120" x="30" y="190" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
