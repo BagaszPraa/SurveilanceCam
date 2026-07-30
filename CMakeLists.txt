@@ -68,6 +68,7 @@ add_executable(SurveilanceCam
     src/YoloDetector.cpp
     src/rtspServer.cpp
     src/APIController.cpp
+    src/ConfigManager.cpp
 )
 
 target_compile_options(SurveilanceCam PUBLIC ${GST_CFLAGS_OTHER})

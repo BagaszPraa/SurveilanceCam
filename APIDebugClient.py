@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-api_debug_client.py — Debug client untuk APIController (drone/edge AI WebSocket server)
+APIDebugClient.py — Debug client untuk APIController (drone/edge AI WebSocket server)
 
 Fungsi:
   - Connect ke APIController dan tampilkan live stream detection_result & ai_status
@@ -14,16 +14,16 @@ Instalasi dependency:
 
 Contoh pemakaian:
     # Listen only (paling umum untuk debug live stream)
-    python3 api_debug_client.py --host 127.0.0.1 --port 8765
+    python3 APIDebugClient.py --host 127.0.0.1 --port 8765
 
     # Kirim command sekali lalu tetap listen
-    python3 api_debug_client.py --threshold 0.6 --classes 0,2
+    python3 APIDebugClient.py --threshold 0.7 --classes 0,1,2,3
 
     # Kirim command sekali lalu langsung keluar (cocok untuk script/CI)
-    python3 api_debug_client.py --threshold 0.6 --classes 0,2 --once
+    python3 APIDebugClient.py --threshold 0.6 --classes 0,2 --once
 
     # Mode interaktif: ketik command sambil lihat stream live
-    python3 api_debug_client.py --interactive
+    python3 APIDebugClient.py --interactive
 """
 
 import argparse
