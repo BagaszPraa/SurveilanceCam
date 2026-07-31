@@ -30,13 +30,6 @@ void logError(const std::string& msg) {
     std::cerr << "[Main] [ERROR] " << msg << std::endl;
 }
 
-// ---------------- Runtime AI config, diubah live via APIController ----------------
-struct RuntimeAIConfig {
-    std::mutex mtx;
-    float confidenceThreshold;
-    std::set<int> targetClasses;   // kosong = semua class diizinkan
-};
-
 std::vector<Detection> applyRuntimeFilter(const std::vector<Detection>& raw,
                                            RuntimeAIConfig& runtimeCfg) {
     float threshold;
@@ -59,25 +52,26 @@ std::vector<Detection> applyRuntimeFilter(const std::vector<Detection>& raw,
 
 
 int main(int argc, char* argv[]) {
-    Config cfg = ConfigManager::load(argc, argv);
+    std::string configPath;
+    Config _appConfig = ConfigManager::load(argc, argv, configPath);
     SourceHandler sourceHandler;
     cv::VideoCapture cap;
     {
         int attempt = 0;
         while (true) {
             ++attempt;
-            if (sourceHandler.openCapture(cfg, cap)) {
+            if (sourceHandler.openCapture(_appConfig, cap)) {
                 logInfo("Input berhasil dibuka pada percobaan ke-" + std::to_string(attempt));
                 break;
             }
 
             if (attempt == 1 || attempt % 10 == 0) {
-                logWarn("Input '" + cfg.inputSource + "' belum tersedia (percobaan ke-" +
+                logWarn("Input '" + _appConfig.inputSource + "' belum tersedia (percobaan ke-" +
                         std::to_string(attempt) + "). Mencoba lagi tiap " +
-                        std::to_string(cfg.reconnectIntervalMs) + " ms...");
+                        std::to_string(_appConfig.reconnectIntervalMs) + " ms...");
             }
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(cfg.reconnectIntervalMs));
+            std::this_thread::sleep_for(std::chrono::milliseconds(_appConfig.reconnectIntervalMs));
         }
     }
 
@@ -89,7 +83,7 @@ int main(int argc, char* argv[]) {
     // serial dengan decode, bukan paralel, dan FPS efektif turun drastis.
     // Mekanisme "selalu ambil frame terbaru" sudah kita tangani sendiri lewat
     // thread capture terpisah + overwrite di bawah, jadi buffer besar di sini aman.
-    if (!cfg.isGstreamer) {
+    if (!_appConfig.isGstreamer) {
         int fourccInt = static_cast<int>(cap.get(cv::CAP_PROP_FOURCC));
         char fourccStr[5] = {
             static_cast<char>(fourccInt & 0xFF),
@@ -108,29 +102,30 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<YoloDetector> detector;
     try {
         detector = std::make_unique<YoloDetector>(
-            cfg.modelPath, cfg.inferSize, cfg.confThresh, cfg.nmsThresh, cfg.targetClasses);
+            _appConfig.modelPath, _appConfig.inferSize, _appConfig.confThresh, _appConfig.nmsThresh, _appConfig.targetClasses);
     } catch (const std::exception& e) {
-        logError("Gagal load model: " + cfg.modelPath + " | Pesan: " + e.what());
+        logError("Gagal load model: " + _appConfig.modelPath + " | Pesan: " + e.what());
         return 1;
     }
 
-    // ---- Runtime AI config (thread-safe), state awal dari cfg ----
+    // ---- Runtime AI config (thread-safe), state awal dari _appConfig ----
     RuntimeAIConfig runtimeAiConfig;
-    runtimeAiConfig.confidenceThreshold = cfg.confThresh;
-    runtimeAiConfig.targetClasses = std::set<int>(cfg.targetClasses.begin(), cfg.targetClasses.end());
+    runtimeAiConfig.confidenceThreshold = _appConfig.confThresh;
+    runtimeAiConfig.targetClasses = std::set<int>(_appConfig.targetClasses.begin(), _appConfig.targetClasses.end());
 
     // ---- APIController: WebSocket server untuk GCS ----
     APIController apiController;
+    apiController.setConfigStore(&_appConfig, configPath);
 
-    apiController.setConfigCommandHandler([&](const AIConfig& newCfg) -> bool {
+    apiController.setConfigCommandHandler([&](const AIConfig& new_appConfig) -> bool {
         std::lock_guard<std::mutex> lock(runtimeAiConfig.mtx);
-        runtimeAiConfig.confidenceThreshold = static_cast<float>(newCfg.confidence_threshold);
+        runtimeAiConfig.confidenceThreshold = static_cast<float>(new_appConfig.confidence_threshold);
 
         // Konvensi: classes_enabled dari GCS berisi class ID dalam bentuk
-        // string, mis. {"0", "2"} -- konsisten dengan format cfg.targetClasses
+        // string, mis. {"0", "2"} -- konsisten dengan format _appConfig.targetClasses
         // di config.ini (comma-separated int).
         runtimeAiConfig.targetClasses.clear();
-        for (const auto& s : newCfg.classes_enabled) {
+        for (const auto& s : new_appConfig.classes_enabled) {
             try {
                 runtimeAiConfig.targetClasses.insert(std::stoi(s));
             } catch (const std::exception&) {
@@ -143,18 +138,14 @@ int main(int argc, char* argv[]) {
                 ", jumlah class aktif=" + std::to_string(runtimeAiConfig.targetClasses.size()));
         return true;
     });
-
     // run() itu blocking (io_service.run()), jadi wajib di thread terpisah.
     // detach() dipakai di sini karena APIController belum punya mekanisme
     // stop() yang graceful -- kalau perlu shutdown bersih, tambahkan method
     // stop() yang panggil server_.stop_listening() + server_.stop().
-    std::thread apiThread([&apiController, &cfg]() {
-        apiController.run(static_cast<uint16_t>(cfg.apiPort));
+    std::thread apiThread([&apiController, &_appConfig]() {
+        apiController.run(static_cast<uint16_t>(_appConfig.apiPort));
     });
     apiThread.detach();
-
-    // logInfo("APIController berjalan di port " + std::to_string(cfg.apiPort));
-    // logInfo("Kamera/berkas terbuka.");
 
     // ---- PROBE FRAME: deteksi resolusi asli dari source (retry sampai berhasil, TIDAK exit) ----
     cv::Mat probeFrame;
@@ -176,13 +167,13 @@ int main(int argc, char* argv[]) {
                 logWarn("Koneksi ke input terputus saat probe, mencoba membuka ulang...");
                 cap.release();
                 int reopenAttempt = 0;
-                while (!sourceHandler.openCapture(cfg, cap)) {
+                while (!sourceHandler.openCapture(_appConfig, cap)) {
                     ++reopenAttempt;
                     if (reopenAttempt == 1 || reopenAttempt % 10 == 0) {
                         logWarn("Percobaan buka ulang ke-" + std::to_string(reopenAttempt) +
-                                " gagal, mencoba lagi tiap " + std::to_string(cfg.reconnectIntervalMs) + " ms...");
+                                " gagal, mencoba lagi tiap " + std::to_string(_appConfig.reconnectIntervalMs) + " ms...");
                     }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(cfg.reconnectIntervalMs));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(_appConfig.reconnectIntervalMs));
                 }
                 logInfo("Input berhasil dibuka ulang, melanjutkan probe frame.");
             }
@@ -197,26 +188,26 @@ int main(int argc, char* argv[]) {
     const int actualWidth  = probeFrame.cols;
     const int actualHeight = probeFrame.rows;
 
-    if (actualWidth != cfg.width || actualHeight != cfg.height) {
+    if (actualWidth != _appConfig.width || actualHeight != _appConfig.height) {
         logInfo("Resolusi asli dari source: " + std::to_string(actualWidth) + "x" + std::to_string(actualHeight) +
-                " (berbeda dari config " + std::to_string(cfg.width) + "x" + std::to_string(cfg.height) +
+                " (berbeda dari config " + std::to_string(_appConfig.width) + "x" + std::to_string(_appConfig.height) +
                 "). Memakai resolusi asli source secara dinamis.");
     } else {
         logInfo("Resolusi asli dari source: " + std::to_string(actualWidth) + "x" + std::to_string(actualHeight));
     }
-    cfg.width  = actualWidth;
-    cfg.height = actualHeight;
+    _appConfig.width  = actualWidth;
+    _appConfig.height = actualHeight;
 
     RtspServer rtspServer(
-        cfg.rtspPort,
-        cfg.rtspMount,
-        cfg.width,
-        cfg.height,
-        cfg.fps,
-        cfg.ipAdress,
-        cfg.encoderType,
-        cfg.codecType,
-        cfg.bitrateKbps
+        _appConfig.rtspPort,
+        _appConfig.rtspMount,
+        _appConfig.width,
+        _appConfig.height,
+        _appConfig.fps,
+        _appConfig.ipAdress,
+        _appConfig.encoderType,
+        _appConfig.codecType,
+        _appConfig.bitrateKbps
     );
 
     if (!rtspServer.start()) {
@@ -251,13 +242,13 @@ int main(int argc, char* argv[]) {
                 cap.release();
 
                 int attempt = 0;
-                while (captureRunning && !sourceHandler.openCapture(cfg, cap)) {
+                while (captureRunning && !sourceHandler.openCapture(_appConfig, cap)) {
                     ++attempt;
                     if (attempt == 1 || attempt % 10 == 0) {
                         logWarn("Reconnect percobaan ke-" + std::to_string(attempt) +
-                                " gagal, mencoba lagi tiap " + std::to_string(cfg.reconnectIntervalMs) + " ms...");
+                                " gagal, mencoba lagi tiap " + std::to_string(_appConfig.reconnectIntervalMs) + " ms...");
                     }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(cfg.reconnectIntervalMs));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(_appConfig.reconnectIntervalMs));
                 }
 
                 if (!captureRunning) break;
@@ -271,14 +262,14 @@ int main(int argc, char* argv[]) {
                 cv::cvtColor(tmp, tmp, cv::COLOR_BGRA2BGR);
             }
 
-            if (tmp.cols != cfg.width || tmp.rows != cfg.height) {
+            if (tmp.cols != _appConfig.width || tmp.rows != _appConfig.height) {
                 if (!resolutionMismatchWarned) {
                     logWarn("Resolusi frame berubah jadi " + std::to_string(tmp.cols) + "x" + std::to_string(tmp.rows) +
-                            " (acuan " + std::to_string(cfg.width) + "x" + std::to_string(cfg.height) +
+                            " (acuan " + std::to_string(_appConfig.width) + "x" + std::to_string(_appConfig.height) +
                             "). Melakukan resize agar stream RTSP tetap konsisten.");
                     resolutionMismatchWarned = true;
                 }
-                cv::resize(tmp, tmp, cv::Size(cfg.width, cfg.height));
+                cv::resize(tmp, tmp, cv::Size(_appConfig.width, _appConfig.height));
             }
 
             {
@@ -381,11 +372,11 @@ int main(int argc, char* argv[]) {
                     statusCfg.classes_enabled.insert(std::to_string(c));
                 }
             }
-            apiController.broadcastStatus(cfg.modelPath, displayFps, statusCfg);
+            apiController.broadcastStatus(_appConfig.modelPath, displayFps, statusCfg);
         }
 
         // ---- Info overlay ----
-        if (cfg.showOverlay) {
+        if (_appConfig.showOverlay) {
             double captureFpsSnapshot;
             {
                 std::lock_guard<std::mutex> fpsLock(fpsMutex);

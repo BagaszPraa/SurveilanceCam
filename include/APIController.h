@@ -18,6 +18,7 @@
 #include <websocketpp/config/asio_no_tls.hpp>
 #include <websocketpp/server.hpp>
 #include <nlohmann/json.hpp>
+#include "ConfigManager.h"
 
 #include <functional>
 #include <mutex>
@@ -47,6 +48,12 @@ struct AIConfig {
     double iou_threshold = 0.45;
     std::set<std::string> classes_enabled = {"person", "vehicle"};
 };
+// ---------------- Runtime AI config, diubah live via APIController ----------------
+struct RuntimeAIConfig {
+    std::mutex mtx;
+    float confidenceThreshold;
+    std::set<int> targetClasses;   // kosong = semua class diizinkan
+};
 
 // ------------------------------------------------------------------
 // APIController
@@ -56,25 +63,24 @@ struct AIConfig {
 // ------------------------------------------------------------------
 class APIController {
 public:
-    // Callback dipanggil saat command config diterima dari GCS.
-    // Return true kalau berhasil diterapkan.
     using ConfigCommandHandler = std::function<bool(const AIConfig&)>;
 
     APIController();
 
-    // Daftarkan handler yang dipanggil setiap kali ada config_command masuk.
     void setConfigCommandHandler(ConfigCommandHandler handler);
 
-    // Jalankan server (blocking call - jalankan di thread terpisah).
+    // Daftarkan Config master + path file-nya, supaya APIController bisa
+    // auto-save ke config.ini setiap kali config_command berhasil diterapkan.
+    // cfg harus tetap valid (hidup) selama APIController dipakai.
+    void setConfigStore(Config* cfg, const std::string& configPath);
+
     void run(uint16_t port);
 
-    // Broadcast hasil deteksi AI ke semua client yang terhubung.
     void broadcastDetections(long frame_id,
                               int res_w, int res_h,
                               const std::vector<ApiDetection>& dets,
                               double inference_time_ms);
 
-    // Broadcast status/heartbeat engine AI (fps, model, config aktif).
     void broadcastStatus(const std::string& model_name,
                           double fps,
                           const AIConfig& cfg);
@@ -86,10 +92,19 @@ private:
     void handleConfigCommand(ConnHandle hdl, const json& j);
     void broadcastRaw(const std::string& payload);
 
+    // Update field yang relevan di Config master berdasarkan AIConfig
+    // yang baru diterapkan, lalu simpan ke file.
+    void persistConfig(const AIConfig& newCfg);
+
     WsServer server_;
     std::set<ConnHandle, std::owner_less<ConnHandle>> clients_;
     std::mutex mutex_;
     ConfigCommandHandler onConfigCommand_;
+
+    // Config store untuk auto-save (opsional; kalau tidak di-set, auto-save dilewati)
+    Config* appConfig_ = nullptr;
+    std::string configPath_;
+    std::mutex configMutex_;   // proteksi terpisah untuk appConfig_ (bisa diakses thread lain juga)
 
     static void logInfo(const std::string& msg);
     static void logWarn(const std::string& msg);

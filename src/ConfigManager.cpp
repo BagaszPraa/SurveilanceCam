@@ -71,6 +71,21 @@ CodecType ConfigManager::parseCodecType(const std::string& value, CodecType fall
     logWarn("codec_type '" + value + "' tidak dikenal, memakai default.");
     return fallback;
 }
+std::string ConfigManager::encoderTypeToString(EncoderType type) {
+    switch (type) {
+        case EncoderType::CPU:        return "cpu";
+        case EncoderType::NVIDIA_GPU: return "nvidia_gpu";
+        case EncoderType::JETSON:     return "jetson";
+        default:                      return "cpu";
+    }
+}
+std::string ConfigManager::codecTypeToString(CodecType type) {
+    switch (type) {
+        case CodecType::H264: return "h264";
+        case CodecType::H265: return "h265";
+        default:              return "h264";
+    }
+}
 
 std::string ConfigManager::findConfigPath(int argc, char* argv[]) {
     std::string configPath = "../config.ini";
@@ -121,7 +136,7 @@ bool ConfigManager::loadFromFile(const std::string& path, Config& cfg) {
             else if (key == "infer_size")             cfg.inferSize = std::stoi(value);
             else if (key == "conf")                  cfg.confThresh = std::stof(value);
             else if (key == "nms")                   cfg.nmsThresh = std::stof(value);
-            else if (key == "target_classes")        cfg.targetClasses = parseIntList(value);
+            else if (key == "classes_enabled")        cfg.targetClasses = parseIntList(value);
             else if (key == "rtsp_port")             cfg.rtspPort = std::stoi(value);
             else if (key == "rtsp_mount")            cfg.rtspMount = value;
             else if (key == "ip_address")            cfg.ipAdress = value;
@@ -138,6 +153,62 @@ bool ConfigManager::loadFromFile(const std::string& path, Config& cfg) {
             logWarn("Gagal parsing baris " + std::to_string(lineNo) + " (" + key + "=" + value + "): " + e.what());
         }
     }
+    return true;
+}
+
+// ------------------------------------------------------------------
+// Tulis konfigurasi saat ini ke file bergaya INI sederhana.
+// Format & urutan key mengikuti loadFromFile agar file bisa dibaca ulang
+// tanpa masalah.
+// ------------------------------------------------------------------
+bool ConfigManager::saveToFile(const std::string& path, const Config& cfg) {
+    std::ofstream file(path);
+    if (!file.is_open()) {
+        logError("Gagal membuka file untuk menulis: " + path);
+        return false;
+    }
+
+    file << "# Config ini digenerate otomatis oleh ConfigManager::saveToFile\n";
+    file << "# Bisa juga diedit manual, format: key = value\n\n";
+
+    file << "input = "  << cfg.inputSource << "\n";
+    file << "model = "  << cfg.modelPath   << "\n";
+    file << "width = "  << cfg.width       << "\n";
+    file << "height = " << cfg.height      << "\n";
+    file << "fps = "    << cfg.fps         << "\n";
+    file << "infer_size = " << cfg.inferSize << "\n";
+    file << "conf = " << cfg.confThresh << "\n";
+    file << "nms = "  << cfg.nmsThresh  << "\n";
+
+    if (!cfg.targetClasses.empty()) {
+        file << "classes_enabled = ";
+        for (size_t i = 0; i < cfg.targetClasses.size(); ++i) {
+            file << cfg.targetClasses[i];
+            if (i + 1 < cfg.targetClasses.size()) file << ",";
+        }
+        file << "\n";
+    }
+
+    file << "rtsp_port = "  << cfg.rtspPort  << "\n";
+    file << "rtsp_mount = " << cfg.rtspMount << "\n";
+    file << "ip_address = " << cfg.ipAdress  << "\n";
+    file << "gstreamer = "  << (cfg.isGstreamer ? "true" : "false") << "\n";
+    file << "reconnect_interval_ms = " << cfg.reconnectIntervalMs << "\n";
+    file << "show_overlay = " << (cfg.showOverlay ? "true" : "false") << "\n";
+    file << "encoder_type = " << encoderTypeToString(cfg.encoderType) << "\n";
+    file << "codec_type = "   << codecTypeToString(cfg.codecType)     << "\n";
+    file << "bitrate_kbps = " << cfg.bitrateKbps << "\n";
+    file << "api_port = " << cfg.apiPort << "\n";
+    file << "api_host = " << cfg.apiHost << "\n";
+
+    file.close();
+
+    if (file.fail()) {
+        logError("Terjadi kesalahan saat menulis konfigurasi ke: " + path);
+        return false;
+    }
+
+    logInfo("Konfigurasi berhasil disimpan ke: " + path);
     return true;
 }
 
@@ -176,12 +247,28 @@ void ConfigManager::logSummary(const Config& cfg) {
     logInfo("==========================================");
     logInfo("Konfigurasi aktif:");
     logInfo("Input      : " + cfg.inputSource + " (gstreamer=" + (cfg.isGstreamer ? "true" : "false") + ")");
+    logInfo("IP Address : " + cfg.ipAdress);
     logInfo("Model      : " + cfg.modelPath);
     logInfo("Resolusi   : " + std::to_string(cfg.width) + "x" + std::to_string(cfg.height) + " @ " +
             std::to_string(cfg.fps) + "fps (permintaan awal, resolusi final mengikuti source)");
     logInfo("InferSize  : " + std::to_string(cfg.inferSize));
     logInfo("Conf/NMS   : " + std::to_string(cfg.confThresh) + " / " + std::to_string(cfg.nmsThresh));
+
+    if (cfg.targetClasses.empty()) {
+        logInfo("Classes    : semua class aktif");
+    } else {
+        std::string classesStr;
+        for (size_t i = 0; i < cfg.targetClasses.size(); ++i) {
+            classesStr += std::to_string(cfg.targetClasses[i]);
+            if (i + 1 < cfg.targetClasses.size()) classesStr += ",";
+        }
+        logInfo("Classes    : " + classesStr + " (" + std::to_string(cfg.targetClasses.size()) + " class aktif)");
+    }
+
     logInfo("RTSP       : port " + std::to_string(cfg.rtspPort) + ", mount " + cfg.rtspMount);
+    logInfo("Encoder    : " + encoderTypeToString(cfg.encoderType) +
+            ", codec " + codecTypeToString(cfg.codecType) +
+            ", bitrate " + std::to_string(cfg.bitrateKbps) + " kbps");
     logInfo("API        : " + cfg.apiHost + ":" + std::to_string(cfg.apiPort));
     logInfo("Reconnect  : tiap " + std::to_string(cfg.reconnectIntervalMs) + " ms jika input belum/tidak tersedia");
     logInfo(std::string("Overlay    : ") + (cfg.showOverlay ? "aktif" : "nonaktif") +
@@ -192,10 +279,12 @@ void ConfigManager::logSummary(const Config& cfg) {
 // ------------------------------------------------------------------
 // Alur lengkap
 // ------------------------------------------------------------------
-Config ConfigManager::load(int argc, char* argv[]) {
+
+Config ConfigManager::load(int argc, char* argv[], std::string& outConfigPath) {
     Config cfg;
 
     std::string configPath = findConfigPath(argc, argv);
+    outConfigPath = configPath;   // <-- baris baru, simpan path ke caller
 
     if (loadFromFile(configPath, cfg)) {
         logInfo("Berhasil memuat konfigurasi dari: " + configPath);

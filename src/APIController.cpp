@@ -67,6 +67,10 @@ APIController::APIController() {
                                  websocketpp::log::alevel::disconnect |
                                  websocketpp::log::alevel::app);
 }
+void APIController::setConfigStore(Config* cfg, const std::string& configPath) {
+    appConfig_ = cfg;
+    configPath_ = configPath;
+}
 
 void APIController::setConfigCommandHandler(ConfigCommandHandler handler) {
     onConfigCommand_ = std::move(handler);
@@ -167,7 +171,38 @@ void APIController::onMessage(ConnHandle hdl, WsServer::message_ptr msg) {
             std::string("Failed to parse message: ") + e.what());
     }
 }
+// ------------------------------------------------------------------
+// Sinkronkan AIConfig (dari command GCS) ke Config master, lalu simpan
+// ke file config.ini. Kalau appConfig_ belum di-set (setConfigStore
+// belum dipanggil), auto-save dilewati.
+// ------------------------------------------------------------------
+void APIController::persistConfig(const AIConfig& newCfg) {
+    if (!appConfig_) {
+        logWarn("Config store belum di-set, auto-save dilewati.");
+        return;
+    }
 
+    std::lock_guard<std::mutex> lock(configMutex_);
+
+    appConfig_->confThresh = newCfg.confidence_threshold;
+    appConfig_->nmsThresh  = newCfg.iou_threshold;
+
+    // Konversi set<string> (class ID dalam bentuk string) -> vector<int>
+    appConfig_->targetClasses.clear();
+    for (const auto& s : newCfg.classes_enabled) {
+        try {
+            appConfig_->targetClasses.push_back(std::stoi(s));
+        } catch (const std::exception&) {
+            logWarn("classes_enabled berisi nilai non-numerik, diabaikan: " + s);
+        }
+    }
+
+    if (ConfigManager::saveToFile(configPath_, *appConfig_)) {
+        logInfo("Config berhasil di-auto-save ke: " + configPath_);
+    } else {
+        logError("Gagal auto-save config ke: " + configPath_);
+    }
+}
 void APIController::handleConfigCommand(ConnHandle hdl, const json& j) {
     AIConfig cfg;
     if (!j.contains("params")) {
@@ -189,11 +224,14 @@ void APIController::handleConfigCommand(ConnHandle hdl, const json& j) {
     }
 
     bool applied = onConfigCommand_ ? onConfigCommand_(cfg) : false;
-    if (!applied) {
-        logWarn("Config command ditolak: " + j.value("command_id", ""));
-    } else {
+
+    if (applied) {
         logInfo("Config command diterapkan: " + j.value("command_id", ""));
+        persistConfig(cfg);   // <-- auto-save di sini
+    } else {
+        logWarn("Config command ditolak: " + j.value("command_id", ""));
     }
+
     json ack;
     ack["type"] = "config_ack";
     ack["command_id"] = j.value("command_id", "");
@@ -202,6 +240,9 @@ void APIController::handleConfigCommand(ConnHandle hdl, const json& j) {
 
     websocketpp::lib::error_code ec;
     server_.send(hdl, ack.dump(), websocketpp::frame::opcode::text, ec);
+    if (ec) {
+        logError("Gagal mengirim ack: " + ec.message());
+    }
 }
 
 // ------------------------------------------------------------------

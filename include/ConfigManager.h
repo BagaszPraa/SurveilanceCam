@@ -47,12 +47,14 @@ public:
     //
     // Contoh pemakaian di main.cpp:
     //   Config cfg = ConfigManager::load(argc, argv);
-    static Config load(int argc, char* argv[]);
+    // static Config load(int argc, char* argv[]);
+    static Config load(int argc, char* argv[], std::string& outConfigPath);
 
     // Method di bawah ini dipecah terpisah (public) supaya bisa dipanggil
     // granular kalau perlu, misal untuk unit test atau reload config
     // tanpa restart program.
     static bool loadFromFile(const std::string& path, Config& cfg);
+    static bool saveToFile(const std::string& path, const Config& cfg);
     static void applyCliArgs(int argc, char* argv[], Config& cfg);
     static void logSummary(const Config& cfg);
 
@@ -63,7 +65,8 @@ private:
     static bool parseBool(const std::string& value);
     static EncoderType parseEncoderType(const std::string& value, EncoderType fallback);
     static CodecType parseCodecType(const std::string& value, CodecType fallback);
-
+    static std::string encoderTypeToString(EncoderType type);
+    static std::string codecTypeToString(CodecType type);
     // Cari nilai --config <path> di argv sebelum parsing argumen lain.
     // Default: "../config.ini" kalau tidak ada flag --config.
     static std::string findConfigPath(int argc, char* argv[]);
