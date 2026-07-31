@@ -8,20 +8,23 @@
 #include <iostream>
 #include <sstream>
 
-// ---------------- Logging lokal, prefix [ConfigManager] ----------------
-// Terpisah dari logInfo/logWarn/logError milik main.cpp (prefix [Main]),
-// supaya jelas asal pesan datang dari modul mana saat baca log gabungan.
-namespace {
-
-void logInfo(const std::string& msg) {
+// ---------------------------------------------------
+// Logging
+// ---------------------------------------------------
+void ConfigManager::logInfo(const std::string& msg)
+{
     std::cout << "[ConfigManager] [INFO] " << msg << std::endl;
 }
 
-void logWarn(const std::string& msg) {
+void ConfigManager::logWarn(const std::string& msg)
+{
     std::cout << "[ConfigManager] [WARN] " << msg << std::endl;
 }
 
-}  // namespace
+void ConfigManager::logError(const std::string& msg)
+{
+    std::cerr << "[ConfigManager] [ERROR] " << msg << std::endl;
+}
 
 // ------------------------------------------------------------------
 // Helper parsing internal
@@ -138,13 +141,6 @@ bool ConfigManager::loadFromFile(const std::string& path, Config& cfg) {
     return true;
 }
 
-// ------------------------------------------------------------------
-// Parsing argumen CLI (override nilai dari file config bila diberikan)
-//   ./yolo_local_test --config myconfig.ini
-//   ./yolo_local_test --input 0 --model ../models/yolo11s.engine
-//   ./yolo_local_test --input /dev/video0 --model ../models/visDrone.engine --infer-size 832
-//   ./yolo_local_test --no-overlay
-// ------------------------------------------------------------------
 void ConfigManager::applyCliArgs(int argc, char* argv[], Config& cfg) {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];

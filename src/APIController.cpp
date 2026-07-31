@@ -6,6 +6,23 @@
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+// ---------------------------------------------------
+// Logging
+// ---------------------------------------------------
+void APIController::logInfo(const std::string& msg)
+{
+    std::cout << "[APIController] [INFO] " << msg << std::endl;
+}
+
+void APIController::logWarn(const std::string& msg)
+{
+    std::cout << "[APIController] [WARN] " << msg << std::endl;
+}
+
+void APIController::logError(const std::string& msg)
+{
+    std::cerr << "[APIController] [ERROR] " << msg << std::endl;
+}
 
 // ------------------------------------------------------------------
 // Helper: timestamp ISO8601 UTC
@@ -56,13 +73,15 @@ void APIController::setConfigCommandHandler(ConfigCommandHandler handler) {
 }
 
 void APIController::run(uint16_t port) {
-    // Bind eksplisit ke IPv4 - lebih portable di berbagai environment
-    // (beberapa sistem/container tidak mendukung dual-stack default).
-    server_.listen(boost::asio::ip::tcp::v4(), port);
-    server_.start_accept();
-    server_.get_alog().write(websocketpp::log::alevel::app,
-        "APIController berjalan di port " + std::to_string(port));
-    server_.run();
+    try {
+        server_.listen(boost::asio::ip::tcp::v4(), port);
+        server_.start_accept();
+        logInfo("Berjalan di port " + std::to_string(port));
+        server_.run();
+    } catch (const std::exception& e) {
+        logError("Gagal menjalankan server di port " + std::to_string(port) + ": " + e.what());
+        throw; // atau exit, sesuai kebutuhan
+    }
 }
 
 // ------------------------------------------------------------------
@@ -121,13 +140,13 @@ void APIController::broadcastStatus(const std::string& model_name,
 void APIController::onOpen(ConnHandle hdl) {
     std::lock_guard<std::mutex> lock(mutex_);
     clients_.insert(hdl);
+    logInfo("Klien baru terhubung. Total klien: " + std::to_string(clients_.size()));
 }
-
 void APIController::onClose(ConnHandle hdl) {
     std::lock_guard<std::mutex> lock(mutex_);
     clients_.erase(hdl);
+    logInfo("Klien terputus. Total klien: " + std::to_string(clients_.size()));
 }
-
 // ------------------------------------------------------------------
 // Message handling
 // ------------------------------------------------------------------
@@ -139,6 +158,9 @@ void APIController::onMessage(ConnHandle hdl, WsServer::message_ptr msg) {
         if (type == "config_command") {
             handleConfigCommand(hdl, j);
         }
+        else {
+            logWarn("Tipe pesan tidak dikenal: " + type);
+        }
         // tipe pesan lain (mis. "ping") bisa ditambah di sini
     } catch (const std::exception& e) {
         server_.get_alog().write(websocketpp::log::alevel::app,
@@ -148,7 +170,13 @@ void APIController::onMessage(ConnHandle hdl, WsServer::message_ptr msg) {
 
 void APIController::handleConfigCommand(ConnHandle hdl, const json& j) {
     AIConfig cfg;
+    if (!j.contains("params")) {
+        logWarn("config_command tanpa field 'params', command_id=" + j.value("command_id", ""));
+        // kirim ack rejected, return
+    }
     const auto& params = j.at("params");
+    logInfo("Menerima config_command id=" + j.value("command_id", "") +
+             " params=" + params.dump());
 
     if (params.contains("confidence_threshold"))
         cfg.confidence_threshold = params["confidence_threshold"];
@@ -161,7 +189,11 @@ void APIController::handleConfigCommand(ConnHandle hdl, const json& j) {
     }
 
     bool applied = onConfigCommand_ ? onConfigCommand_(cfg) : false;
-
+    if (!applied) {
+        logWarn("Config command ditolak: " + j.value("command_id", ""));
+    } else {
+        logInfo("Config command diterapkan: " + j.value("command_id", ""));
+    }
     json ack;
     ack["type"] = "config_ack";
     ack["command_id"] = j.value("command_id", "");
@@ -180,5 +212,8 @@ void APIController::broadcastRaw(const std::string& payload) {
     for (auto& hdl : clients_) {
         websocketpp::lib::error_code ec;
         server_.send(hdl, payload, websocketpp::frame::opcode::text, ec);
+        if (ec) {
+            logError("Gagal broadcast ke salah satu klien: " + ec.message());
+        }
     }
 }

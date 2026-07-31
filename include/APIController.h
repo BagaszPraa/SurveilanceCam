@@ -90,4 +90,8 @@ private:
     std::set<ConnHandle, std::owner_less<ConnHandle>> clients_;
     std::mutex mutex_;
     ConfigCommandHandler onConfigCommand_;
+
+    static void logInfo(const std::string& msg);
+    static void logWarn(const std::string& msg);
+    static void logError(const std::string& msg);
 };

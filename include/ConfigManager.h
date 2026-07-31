@@ -67,4 +67,9 @@ private:
     // Cari nilai --config <path> di argv sebelum parsing argumen lain.
     // Default: "../config.ini" kalau tidak ada flag --config.
     static std::string findConfigPath(int argc, char* argv[]);
+
+    static void logInfo(const std::string& msg);
+    static void logWarn(const std::string& msg);
+    static void logError(const std::string& msg);
+
 };
