@@ -46,7 +46,7 @@ struct ApiDetection {
 struct AIConfig {
     double confidence_threshold = 0.75;
     double iou_threshold = 0.45;
-    std::set<std::string> classes_enabled = {"person", "vehicle"};
+    std::set<std::string> classes_enabled;
 };
 // ---------------- Runtime AI config, diubah live via APIController ----------------
 struct RuntimeAIConfig {
