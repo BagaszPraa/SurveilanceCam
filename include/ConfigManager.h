@@ -36,6 +36,9 @@ struct Config {
     bool showOverlay;    // tampilkan teks info (Count/Infer/FPS/Resolusi) -- TIDAK memengaruhi bbox
     int apiPort;
     std::string apiHost;  // bind ke semua interface
+    bool isDetection;     // aktifkan modul deteksi (YOLO)
+    bool isCrowdCounting; // aktifkan modul crowd counting (heatmap + estimasi
+    std::string crowdModelPath; // path ke model crowd counting
 };
 class ConfigManager {
 public:

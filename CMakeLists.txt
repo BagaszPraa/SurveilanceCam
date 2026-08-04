@@ -70,6 +70,7 @@ add_executable(SurveilanceCam
     src/APIController.cpp
     src/ConfigManager.cpp
     src/SourceHandler.cpp
+    src/CrowdCounting.cpp
 )
 
 target_compile_options(SurveilanceCam PUBLIC ${GST_CFLAGS_OTHER})

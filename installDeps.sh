@@ -211,6 +211,7 @@ pkgs = [
     ('setuptools', 'setuptools'),
     ('wheel', 'wheel'),
     ('numpy', 'numpy'),
+    ('h5py', 'h5py'),
     ('torch', 'torch'),
     ('torchvision', 'torchvision'),
     ('ultralytics', 'ultralytics'),
@@ -251,11 +252,11 @@ else
     # Sisanya — dari PyPI biasa
     pip3 install --no-cache-dir \
         numpy \
+        h5py \
         ultralytics \
         onnx \
         onnxruntime-gpu \
         "nvidia-modelopt[onnx]>=0.44"
-
     FINAL_VER=$(python3 -c "
 import importlib
 pkgs = [

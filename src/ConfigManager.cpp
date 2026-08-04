@@ -148,6 +148,9 @@ bool ConfigManager::loadFromFile(const std::string& path, Config& cfg) {
             else if (key == "bitrate_kbps")          cfg.bitrateKbps = std::stoi(value);
             else if (key == "api_port")              cfg.apiPort = std::stoi(value);
             else if (key == "api_host")              cfg.apiHost = value;
+            else if (key == "is_detection")          cfg.isDetection = parseBool(value);
+            else if (key == "is_crowd_counting")     cfg.isCrowdCounting = parseBool(value);
+            else if (key == "crowd_model")           cfg.crowdModelPath = value;
             else logWarn("Key tidak dikenal di baris " + std::to_string(lineNo) + ": " + key);
         } catch (const std::exception& e) {
             logWarn("Gagal parsing baris " + std::to_string(lineNo) + " (" + key + "=" + value + "): " + e.what());

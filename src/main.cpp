@@ -10,12 +10,14 @@
 #include <atomic>
 #include <algorithm>
 #include <set>
+#include <future>
 
 #include "YoloDetector.h"
 #include "rtspServer.h"
 #include "ConfigManager.h"
 #include "APIController.h"
 #include "SourceHandler.h"
+#include "CrowdCounting.h"
 
 // ---------------- Logging, prefix [Main] ----------------
 void logInfo(const std::string& msg) {
@@ -75,14 +77,6 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // CATATAN: BUFFERSIZE sengaja TIDAK dipaksa ke 1 di sini. Kernel V4L2 perlu
-    // beberapa buffer supaya bisa terus capture frame baru sementara userspace
-    // masih sibuk decode JPEG frame sebelumnya (overlap capture+decode).
-    // Kalau buffer cuma 1, kernel harus nunggu kita "lepas" buffer itu dulu
-    // (selesai decode) sebelum bisa capture frame berikutnya -- capture jadi
-    // serial dengan decode, bukan paralel, dan FPS efektif turun drastis.
-    // Mekanisme "selalu ambil frame terbaru" sudah kita tangani sendiri lewat
-    // thread capture terpisah + overwrite di bawah, jadi buffer besar di sini aman.
     if (!_appConfig.isGstreamer) {
         int fourccInt = static_cast<int>(cap.get(cv::CAP_PROP_FOURCC));
         char fourccStr[5] = {
@@ -108,22 +102,37 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // ---- Runtime AI config (thread-safe), state awal dari _appConfig ----
+    // ---- Modul Crowd Counting, hanya dimuat kalau flag aktif ----
+    // NOTE: isDetection & isCrowdCounting diasumsikan ada sebagai field bool
+    // di struct Config (main.h) dan dibaca dari config.ini lewat ConfigManager.
+    // Silakan sesuaikan nama field & parsing-nya dengan struct Config yang asli.
+    std::unique_ptr<CrowdCounting> crowdCounter;
+    if (_appConfig.isCrowdCounting) {
+        try {
+            crowdCounter = std::make_unique<CrowdCounting>(_appConfig.crowdModelPath);
+            logInfo("Modul Crowd Counting aktif.");
+        } catch (const std::exception& e) {
+            logError("Gagal load model Crowd Counting: " + std::string(e.what()));
+            return 1;
+        }
+    } else {
+        logInfo("Modul Crowd Counting nonaktif (isCrowdCounting=false).");
+    }
+
+    if (!_appConfig.isDetection) {
+        logInfo("Modul Detection nonaktif (isDetection=false).");
+    }
+
     RuntimeAIConfig runtimeAiConfig;
     runtimeAiConfig.confidenceThreshold = _appConfig.confThresh;
     runtimeAiConfig.targetClasses = std::set<int>(_appConfig.targetClasses.begin(), _appConfig.targetClasses.end());
 
-    // ---- APIController: WebSocket server untuk GCS ----
     APIController apiController;
     apiController.setConfigStore(&_appConfig, configPath);
 
     apiController.setConfigCommandHandler([&](const AIConfig& new_appConfig) -> bool {
         std::lock_guard<std::mutex> lock(runtimeAiConfig.mtx);
         runtimeAiConfig.confidenceThreshold = static_cast<float>(new_appConfig.confidence_threshold);
-
-        // Konvensi: classes_enabled dari GCS berisi class ID dalam bentuk
-        // string, mis. {"0", "2"} -- konsisten dengan format _appConfig.targetClasses
-        // di config.ini (comma-separated int).
         runtimeAiConfig.targetClasses.clear();
         for (const auto& s : new_appConfig.classes_enabled) {
             try {
@@ -132,37 +141,28 @@ int main(int argc, char* argv[]) {
                 logWarn("classes_enabled berisi nilai non-numerik, diabaikan: " + s);
             }
         }
-
         logInfo("Config AI diperbarui via APIController: threshold=" +
                 std::to_string(runtimeAiConfig.confidenceThreshold) +
                 ", jumlah class aktif=" + std::to_string(runtimeAiConfig.targetClasses.size()));
         return true;
     });
-    // run() itu blocking (io_service.run()), jadi wajib di thread terpisah.
-    // detach() dipakai di sini karena APIController belum punya mekanisme
-    // stop() yang graceful -- kalau perlu shutdown bersih, tambahkan method
-    // stop() yang panggil server_.stop_listening() + server_.stop().
     std::thread apiThread([&apiController, &_appConfig]() {
         apiController.run(static_cast<uint16_t>(_appConfig.apiPort));
     });
     apiThread.detach();
 
-    // ---- PROBE FRAME: deteksi resolusi asli dari source (retry sampai berhasil, TIDAK exit) ----
     cv::Mat probeFrame;
     {
         int attempt = 0;
         while (true) {
             ++attempt;
-
             if (cap.read(probeFrame) && !probeFrame.empty()) {
                 break;
             }
-
             if (attempt == 1 || attempt % 30 == 0) {
                 logWarn("Belum berhasil membaca frame dari source (percobaan ke-" +
                         std::to_string(attempt) + "). Menunggu...");
             }
-
             if (!cap.isOpened()) {
                 logWarn("Koneksi ke input terputus saat probe, mencoba membuka ulang...");
                 cap.release();
@@ -177,7 +177,6 @@ int main(int argc, char* argv[]) {
                 }
                 logInfo("Input berhasil dibuka ulang, melanjutkan probe frame.");
             }
-
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
     }
@@ -215,7 +214,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // ---- State frame terbaru, dipakai bareng antara capture thread & main thread ----
     std::mutex captureMutex;
     cv::Mat latestCapturedFrame = probeFrame;
     std::atomic<bool> captureRunning{true};
@@ -223,7 +221,6 @@ int main(int argc, char* argv[]) {
     std::mutex fpsMutex;
     double captureFps = 0.0;
 
-    // ---- Thread capture terpisah ----
     std::thread captureThread([&]() {
         cv::Mat tmp;
         int frameCount = 0;
@@ -233,14 +230,11 @@ int main(int argc, char* argv[]) {
         while (captureRunning) {
             if (!cap.read(tmp) || tmp.empty()) {
                 logWarn("Gagal ambil frame dari source. Mencoba menyambung ulang...");
-
                 {
                     std::lock_guard<std::mutex> lock(captureMutex);
                     frameAvailable = false;
                 }
-
                 cap.release();
-
                 int attempt = 0;
                 while (captureRunning && !sourceHandler.openCapture(_appConfig, cap)) {
                     ++attempt;
@@ -250,9 +244,7 @@ int main(int argc, char* argv[]) {
                     }
                     std::this_thread::sleep_for(std::chrono::milliseconds(_appConfig.reconnectIntervalMs));
                 }
-
                 if (!captureRunning) break;
-
                 logInfo("Berhasil menyambung ulang ke source, melanjutkan streaming.");
                 resolutionMismatchWarned = false;
                 continue;
@@ -307,16 +299,50 @@ int main(int argc, char* argv[]) {
             frame = latestCapturedFrame.clone();
         }
 
+        // ---- Fork: jalankan Detection dan Crowd Counting secara independen ----
+        // Sesuai flag isDetection / isCrowdCounting. Kalau keduanya aktif,
+        // dieksekusi paralel via std::async supaya crowd counting yang berat
+        // tidak nge-block pipeline deteksi (dan sebaliknya). Masing-masing
+        // worker menerima clone frame sendiri karena cv::Mat bukan thread-safe
+        // untuk ditulis dari dua sisi sekaligus.
+        std::vector<Detection> detections;
+        double inferMs = 0.0;
+        CrowdCountResult crowdResult; // default kosong kalau modul nonaktif
+
+        std::future<std::vector<Detection>> detectionFuture;
+        std::future<CrowdCountResult> crowdFuture;
+
         auto t0 = std::chrono::steady_clock::now();
-        std::vector<Detection> rawDetections = detector->infer(frame);
+
+        if (_appConfig.isDetection) {
+            cv::Mat detFrame = frame; // infer() hanya baca, aman dishare
+            detectionFuture = std::async(std::launch::async, [&detector, detFrame]() {
+                return detector->infer(detFrame);
+            });
+        }
+
+        if (_appConfig.isCrowdCounting && crowdCounter) {
+            cv::Mat crowdFrame = frame.clone(); // clone supaya aman dari race
+            crowdFuture = std::async(std::launch::async, [&crowdCounter, crowdFrame]() {
+                return crowdCounter->infer(crowdFrame);
+            });
+        }
+
+        // ---- Join: tunggu kedua worker selesai sebelum lanjut ke postprocessing ----
+        std::vector<Detection> rawDetections;
+        if (detectionFuture.valid()) {
+            rawDetections = detectionFuture.get();
+        }
+        if (crowdFuture.valid()) {
+            crowdResult = crowdFuture.get();
+        }
+
         auto t1 = std::chrono::steady_clock::now();
-        double inferMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        inferMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-        // Terapkan threshold/class filter yang bisa diubah live lewat APIController.
-        std::vector<Detection> detections = applyRuntimeFilter(rawDetections, runtimeAiConfig);
+        if (_appConfig.isDetection) {
+            detections = applyRuntimeFilter(rawDetections, runtimeAiConfig);
 
-        // ---- Broadcast hasil deteksi ke GCS via APIController ----
-        {
             std::vector<ApiDetection> apiDets;
             apiDets.reserve(detections.size());
             int idx = 0;
@@ -332,28 +358,30 @@ int main(int argc, char* argv[]) {
                 apiDets.push_back(ad);
             }
             apiController.broadcastDetections(frameId, frame.cols, frame.rows, apiDets, inferMs);
-            ++frameId;
+
+            for (const auto& det : detections) {
+                cv::rectangle(frame, det.box, cv::Scalar(0, 255, 0), 2);
+                std::string label =
+                    std::string(detector->getClassName(det.classId)) +
+                    " " +
+                    cv::format("%.2f", det.confidence);
+                cv::putText(frame, label, cv::Point(det.box.x, det.box.y - 5),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2);
+            }
+        }
+        ++frameId;
+
+        // ---- Merge hasil Crowd Counting (heatmap + estimasi jumlah) ke frame ----
+        if (_appConfig.isCrowdCounting && crowdCounter && crowdResult.valid) {
+            cv::addWeighted(frame, 1.0, crowdResult.heatmapOverlay, 0.4, 0.0, frame);
+
+            std::string crowdText = "Crowd est.: " + std::to_string(crowdResult.estimatedCount);
+            cv::putText(frame, crowdText, cv::Point(20, 160),
+                        cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 200, 255), 1);
+
+            // apiController.broadcastCrowdCount(frameId, crowdResult.estimatedCount);
         }
 
-        // ---- Bounding box + label hasil deteksi ----
-        for (const auto& det : detections) {
-            cv::rectangle(frame, det.box, cv::Scalar(0, 255, 0), 2);
-
-            std::string label =
-                std::string(detector->getClassName(det.classId)) +
-                " " +
-                cv::format("%.2f", det.confidence);
-
-            cv::putText(frame,
-                        label,
-                        cv::Point(det.box.x, det.box.y - 5),
-                        cv::FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        cv::Scalar(0, 255, 0),
-                        2);
-        }
-
-        // ---- Hitung Display FPS ----
         ++displayFrameCount;
         auto now = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration<double>(now - displayFpsWindowStart).count();
@@ -363,7 +391,6 @@ int main(int argc, char* argv[]) {
             displayFrameCount = 0;
             displayFpsWindowStart = now;
 
-            // ---- Broadcast status AI engine ke GCS ----
             AIConfig statusCfg;
             {
                 std::lock_guard<std::mutex> lock(runtimeAiConfig.mtx);
@@ -375,14 +402,13 @@ int main(int argc, char* argv[]) {
             apiController.broadcastStatus(_appConfig.modelPath, displayFps, statusCfg);
         }
 
-        // ---- Info overlay ----
         if (_appConfig.showOverlay) {
             double captureFpsSnapshot;
             {
                 std::lock_guard<std::mutex> fpsLock(fpsMutex);
                 captureFpsSnapshot = captureFps;
             }
-            std::string countText = "Count: " + std::to_string(detections.size()) +
+            std::string countText = "Detection count: " + std::to_string(detections.size()) +
                                      "  |  Infer: " + std::to_string(static_cast<int>(inferMs)) + " ms";
             std::string fpsText = "Capture FPS: " + std::to_string(static_cast<int>(captureFpsSnapshot)) +
                                    "  |  Display FPS: " + std::to_string(static_cast<int>(displayFps));
