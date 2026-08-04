@@ -7,3 +7,7 @@
 [submodule "deps/websocketapp"]
 	path = deps/websocketapp
 	url = https://github.com/zaphoyd/websocketpp.git
+
+[submodule "deps/DM_Count"]
+	path = deps/DM_Count
+	url = https://github.com/cvlab-stonybrook/DM-Count.git
