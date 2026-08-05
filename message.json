@@ -1,0 +1,20 @@
+{
+  "type": "cmd",
+  "command_id": "string (UUID)",
+  "timestamp": "string (ISO8601 UTC, opsional)",
+  "params": {
+    "conf": "number (0.0 - 1.0)",
+    "nms": "number (0.0 - 1.0)",
+    "class": ["string", "..."],
+    "detect": "boolean",
+    "crowd": "boolean",
+    "overlay": "boolean",
+
+    "crowd_interval": "integer",
+    "crowd_width": "integer",
+    "crowd_height": "integer",
+    "infer_size": "integer",
+    "bitrate_kbps": "integer",
+    "reconnect_ms": "integer"
+  }
+}

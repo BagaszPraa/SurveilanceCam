@@ -42,17 +42,56 @@ struct ApiDetection {
 };
 
 // ------------------------------------------------------------------
-// Struct konfigurasi AI yang bisa diubah lewat command dari GCS
+// Struct konfigurasi AI yang bisa diubah lewat command "cmd" dari GCS.
+//
+// Nama member C++ di sini TIDAK selalu sama dengan key JSON di wire
+// protocol -- lihat mapping lengkap di kFieldKey* (APIController.cpp)
+// dan tabel di bawah. Ini karena beberapa key JSON pendek ("class")
+// bentrok dengan keyword C++.
+//
+// Semua field bertipe std::optional supaya bisa dibedakan antara
+// "tidak dikirim di command ini" vs "dikirim dengan nilai tertentu" --
+// field yang tidak dikirim TIDAK menimpa nilai yang sedang berjalan.
+//
+// Golongan & mapping JSON key -> member:
+//   [USER]      conf            -> confidenceThreshold   (real-time)
+//               nms             -> iouThreshold           (real-time)
+//               class           -> classesEnabled         (real-time)
+//               detect          -> detectionEnabled       (real-time)
+//               crowd           -> crowdCountingEnabled   (real-time)
+//               overlay         -> showOverlay            (real-time)
+//
+//   [SEMI-DEV]  crowd_interval  -> crowdInferInterval     (butuh restart*)
+//               crowd_width     -> crowdInputWidth        (butuh restart*)
+//               crowd_height    -> crowdInputHeight       (butuh restart*)
+//               infer_size      -> inferSize              (butuh restart*)
+//               bitrate_kbps    -> bitrateKbps             (butuh restart*)
+//               reconnect_ms    -> reconnectIntervalMs    (real-time**)
+//
+//   * Butuh restart aplikasi karena nilai ini dipakai untuk alokasi
+//     buffer/engine saat startup (CrowdCounting/YoloDetector/RtspServer
+//     encoder), bukan dibaca ulang tiap iterasi loop.
+//   ** reconnectIntervalMs dibaca langsung dari Config master di setiap
+//      iterasi reconnect loop, jadi bisa berlaku live tanpa restart.
+//
+//   [FULL-DEV]  ip_address, api_port, api_host
+//               -> SENGAJA TIDAK ADA di struct ini / ditolak total kalau
+//               muncul di params (lihat kFullDevOnlyKeys di .cpp).
 // ------------------------------------------------------------------
 struct AIConfig {
-    double confidence_threshold = 0.75;
-    double iou_threshold = 0.45;
-    std::set<std::string> classes_enabled;
+    std::optional<double> confidenceThreshold;
+    std::optional<double> iouThreshold;
+    std::optional<std::set<std::string>> classesEnabled;
+    std::optional<bool> detectionEnabled;
+    std::optional<bool> crowdCountingEnabled;
+    std::optional<bool> showOverlay;
 
-    // Opsional: hanya ter-set kalau client memang mengirim field ini di
-    // params, supaya bisa dibedakan dari "tidak diubah pada command ini".
-    std::optional<bool> detection_enabled;
-    std::optional<bool> crowd_counting_enabled;
+    std::optional<int> crowdInferInterval;
+    std::optional<int> crowdInputWidth;
+    std::optional<int> crowdInputHeight;
+    std::optional<int> inferSize;
+    std::optional<int> bitrateKbps;
+    std::optional<int> reconnectIntervalMs;
 };
 // ---------------- Runtime AI config, diubah live via APIController ----------------
 struct RuntimeAIConfig {
@@ -76,7 +115,7 @@ public:
     void setConfigCommandHandler(ConfigCommandHandler handler);
 
     // Daftarkan Config master + path file-nya, supaya APIController bisa
-    // auto-save ke config.ini setiap kali config_command berhasil diterapkan.
+    // auto-save ke config.ini setiap kali command berhasil diterapkan.
     // cfg harus tetap valid (hidup) selama APIController dipakai.
     void setConfigStore(Config* cfg, const std::string& configPath);
 
@@ -88,11 +127,12 @@ public:
                               double inference_time_ms);
 
     // detection_enabled/crowd_counting_enabled: status modul saat ini,
-    // dikirim di field "detection_enabled"/"crowd_counting_enabled" pada
-    // payload ai_status, supaya client (GUI/CLI) bisa sinkron statusnya.
+    // dikirim di payload ai_status, supaya client (GUI/CLI) bisa sinkron
+    // statusnya.
     void broadcastStatus(const std::string& model_name,
                           double fps,
-                          const AIConfig& cfg,
+                          double currentConfidenceThreshold,
+                          const std::set<std::string>& currentClasses,
                           bool detection_enabled,
                           bool crowd_counting_enabled);
 

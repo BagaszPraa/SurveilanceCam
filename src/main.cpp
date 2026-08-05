@@ -150,20 +150,58 @@ int main(int argc, char* argv[]) {
     APIController apiController;
     apiController.setConfigStore(&_appConfig, configPath);
 
-    apiController.setConfigCommandHandler([&](const AIConfig& new_appConfig) -> bool {
-        std::lock_guard<std::mutex> lock(runtimeAiConfig.mtx);
-        runtimeAiConfig.confidenceThreshold = static_cast<float>(new_appConfig.confidence_threshold);
-        runtimeAiConfig.targetClasses.clear();
-        for (const auto& s : new_appConfig.classes_enabled) {
-            try {
-                runtimeAiConfig.targetClasses.insert(std::stoi(s));
-            } catch (const std::exception&) {
-                logWarn("classes_enabled berisi nilai non-numerik, diabaikan: " + s);
+    apiController.setConfigCommandHandler([&](const AIConfig& newCfg) -> bool {
+        // ---- Golongan USER: berlaku langsung tanpa restart ----
+        {
+            std::lock_guard<std::mutex> lock(runtimeAiConfig.mtx);
+
+            if (newCfg.confidenceThreshold.has_value()) {
+                runtimeAiConfig.confidenceThreshold = static_cast<float>(newCfg.confidenceThreshold.value());
+            }
+            if (newCfg.classesEnabled.has_value()) {
+                runtimeAiConfig.targetClasses.clear();
+                for (const auto& s : newCfg.classesEnabled.value()) {
+                    try {
+                        runtimeAiConfig.targetClasses.insert(std::stoi(s));
+                    } catch (const std::exception&) {
+                        logWarn("class berisi nilai non-numerik, diabaikan: " + s);
+                    }
+                }
             }
         }
-        logInfo("Config AI diperbarui via APIController: threshold=" +
-                std::to_string(runtimeAiConfig.confidenceThreshold) +
-                ", jumlah class aktif=" + std::to_string(runtimeAiConfig.targetClasses.size()));
+
+        // isDetection/isCrowdCounting/showOverlay dibaca langsung dari
+        // _appConfig di tiap iterasi loop utama, jadi cukup di-update di sini
+        // supaya berlaku live tanpa restart.
+        if (newCfg.detectionEnabled.has_value()) {
+            _appConfig.isDetection = newCfg.detectionEnabled.value();
+            logInfo(std::string("Detection ") + (_appConfig.isDetection ? "diaktifkan" : "dinonaktifkan") + " via cmd.");
+        }
+        if (newCfg.crowdCountingEnabled.has_value()) {
+            _appConfig.isCrowdCounting = newCfg.crowdCountingEnabled.value();
+            logInfo(std::string("Crowd Counting ") + (_appConfig.isCrowdCounting ? "diaktifkan" : "dinonaktifkan") + " via cmd.");
+        }
+        if (newCfg.showOverlay.has_value()) {
+            _appConfig.showOverlay = newCfg.showOverlay.value();
+        }
+
+        // reconnect_ms juga live -- dibaca langsung dari _appConfig di
+        // reconnect loop (captureThread & probe frame), tidak butuh restart.
+        if (newCfg.reconnectIntervalMs.has_value()) {
+            _appConfig.reconnectIntervalMs = newCfg.reconnectIntervalMs.value();
+            logInfo("reconnect_ms diperbarui via cmd: " + std::to_string(_appConfig.reconnectIntervalMs));
+        }
+
+        // ---- Golongan SEMI-DEV (crowd_interval, crowd_width, crowd_height,
+        // infer_size, bitrate_kbps): TIDAK diterapkan ke objek yang sedang
+        // berjalan di sini -- crowdInferInterval, ukuran buffer CrowdCounting,
+        // engine YOLO, dan encoder RtspServer semuanya sudah dikonstruksi
+        // dengan nilai lama saat startup. persistConfig() di APIController
+        // tetap menulis nilai baru ini ke Config master & config.ini, dan
+        // baru benar-benar berlaku setelah aplikasi di-restart -- makanya
+        // config_ack untuk parameter ini berisi requires_restart=true.
+
+        logInfo("Config AI diperbarui via cmd.");
         return true;
     });
     std::thread apiThread([&apiController, &_appConfig]() {
@@ -327,12 +365,12 @@ int main(int argc, char* argv[]) {
         // untuk ditulis dari dua sisi sekaligus.
         std::vector<Detection> detections;
         double inferMs = 0.0;
-        CrowdCountResult crowdResult = lastCrowdResult; // [BARU] default: pakai cache frame sebelumnya
+        CrowdCountResult crowdResult = lastCrowdResult; // default: pakai cache frame sebelumnya
 
         std::future<std::vector<Detection>> detectionFuture;
         std::future<CrowdCountResult> crowdFuture;
 
-        // [BARU] Crowd counting cuma benar-benar dijalankan tiap crowdInferInterval
+        // Crowd counting cuma benar-benar dijalankan tiap crowdInferInterval
         // frame -- VGG-19 backbone DM-Count jauh lebih berat dari YOLO, dan
         // kerumunan tidak berubah drastis dalam hitungan ratus milidetik, jadi
         // tidak perlu di-infer setiap frame. Di frame yang di-skip, overlay tetap
@@ -358,7 +396,7 @@ int main(int argc, char* argv[]) {
         }
 
         if (_appConfig.isCrowdCounting && crowdCounter) {
-            ++crowdFrameCounter; // [BARU] hitung tiap frame video, bukan tiap infer
+            ++crowdFrameCounter; // hitung tiap frame video, bukan tiap infer
         }
 
         // ---- Join: tunggu kedua worker selesai sebelum lanjut ke postprocessing ----
@@ -368,12 +406,15 @@ int main(int argc, char* argv[]) {
         }
         if (crowdFuture.valid()) {
             crowdResult = crowdFuture.get();
-            lastCrowdResult = crowdResult; // [BARU] update cache untuk frame-frame berikutnya
+            lastCrowdResult = crowdResult; // update cache untuk frame-frame berikutnya
         }
 
         auto t1 = std::chrono::steady_clock::now();
         inferMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
+        // ---- Bbox deteksi: SELALU digambar kalau isDetection aktif,
+        // terlepas dari showOverlay. showOverlay hanya mengontrol teks
+        // statistik tambahan (count/FPS/resolusi), bukan bbox itu sendiri. ----
         if (_appConfig.isDetection) {
             detections = applyRuntimeFilter(rawDetections, runtimeAiConfig);
 
@@ -405,13 +446,18 @@ int main(int argc, char* argv[]) {
         }
         ++frameId;
 
-        // ---- Merge hasil Crowd Counting (heatmap + estimasi jumlah) ke frame ----
+        // ---- Merge hasil Crowd Counting: heatmap density SELALU digambar
+        // kalau modul aktif & hasil valid, terlepas dari showOverlay. Cuma
+        // TEKS estimasi jumlah ("Estimasi Kerumunan: N") yang mengikuti
+        // flag showOverlay -- sama seperti teks statistik lain. ----
         if (_appConfig.isCrowdCounting && crowdCounter && crowdResult.valid) {
             cv::addWeighted(frame, 1.0, crowdResult.heatmapOverlay, 0.4, 0.0, frame);
 
-            std::string crowdText = "Estimasi Kerumunan: " + std::to_string(crowdResult.estimatedCount);
-            cv::putText(frame, crowdText, cv::Point(20, 160),
-                        cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 200, 255), 3);
+            if (_appConfig.showOverlay) {
+                std::string crowdText = "Estimasi Kerumunan: " + std::to_string(crowdResult.estimatedCount);
+                cv::putText(frame, crowdText, cv::Point(20, 160),
+                            cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 200, 255), 3);
+            }
 
             // apiController.broadcastCrowdCount(frameId, crowdResult.estimatedCount);
         }
@@ -425,17 +471,24 @@ int main(int argc, char* argv[]) {
             displayFrameCount = 0;
             displayFpsWindowStart = now;
 
-            AIConfig statusCfg;
+            double statusConfidenceThreshold;
+            std::set<std::string> statusClasses;
             {
                 std::lock_guard<std::mutex> lock(runtimeAiConfig.mtx);
-                statusCfg.confidence_threshold = runtimeAiConfig.confidenceThreshold;
+                statusConfidenceThreshold = runtimeAiConfig.confidenceThreshold;
                 for (int c : runtimeAiConfig.targetClasses) {
-                    statusCfg.classes_enabled.insert(std::to_string(c));
+                    statusClasses.insert(std::to_string(c));
                 }
             }
-            apiController.broadcastStatus(_appConfig.modelPath, displayFps, statusCfg, _appConfig.isDetection, _appConfig.isCrowdCounting);
+            apiController.broadcastStatus(_appConfig.modelPath, displayFps,
+                                        statusConfidenceThreshold, statusClasses,
+                                        _appConfig.isDetection, _appConfig.isCrowdCounting);
         }
 
+        // ---- Teks statistik (count/infer time/FPS/resolusi): HANYA
+        // muncul kalau showOverlay aktif. Ini satu-satunya bagian yang
+        // dikontrol showOverlay -- bbox & heatmap density tetap tampil
+        // di luar blok ini. ----
         if (_appConfig.showOverlay) {
             double captureFpsSnapshot;
             {

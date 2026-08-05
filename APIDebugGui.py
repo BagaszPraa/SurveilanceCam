@@ -184,7 +184,7 @@ class MainWindow(QMainWindow):
         return box
 
     def _build_config_group(self) -> QGroupBox:
-        box = QGroupBox("Ubah konfigurasi AI (config_command)")
+        box = QGroupBox("Ubah konfigurasi AI (cmd)")
         outer = QVBoxLayout(box)
         form = QFormLayout()
 
@@ -193,19 +193,19 @@ class MainWindow(QMainWindow):
         self.threshold_spin.setSingleStep(0.01)
         self.threshold_spin.setDecimals(2)
         self.threshold_spin.setValue(0.75)
-        form.addRow("confidence_threshold:", self.threshold_spin)
+        form.addRow("conf:", self.threshold_spin)
 
         self.iou_spin = QDoubleSpinBox()
         self.iou_spin.setRange(0.0, 1.0)
         self.iou_spin.setSingleStep(0.01)
         self.iou_spin.setDecimals(2)
         self.iou_spin.setValue(0.45)
-        form.addRow("iou_threshold:", self.iou_spin)
+        form.addRow("nms:", self.iou_spin)
 
         self.classes_edit = QLineEdit("0,1,2,3")
         self.classes_edit.setPlaceholderText("contoh: 0,2,5 (kosongkan = tidak diubah)")
         self.classes_edit.textEdited.connect(self._on_classes_edit_manual)
-        form.addRow("classes_enabled:", self.classes_edit)
+        form.addRow("class:", self.classes_edit)
 
         outer.addLayout(form)
 
@@ -214,7 +214,7 @@ class MainWindow(QMainWindow):
         self.load_names_btn = QPushButton("Load .names file...")
         self.load_names_btn.clicked.connect(self._on_load_names_clicked)
         names_row.addWidget(self.load_names_btn)
-        self.names_path_label = QLabel("(belum ada file dimuat, isi classes_enabled manual di atas)")
+        self.names_path_label = QLabel("(belum ada file dimuat, isi class manual di atas)")
         self.names_path_label.setStyleSheet("color: #888;")
         self.names_path_label.setWordWrap(True)
         names_row.addWidget(self.names_path_label, stretch=1)
@@ -239,11 +239,11 @@ class MainWindow(QMainWindow):
         outer.addLayout(select_row)
 
         checks_row = QHBoxLayout()
-        self.send_threshold_cb = QCheckBox("Kirim threshold")
+        self.send_threshold_cb = QCheckBox("Kirim conf")
         self.send_threshold_cb.setChecked(True)
-        self.send_iou_cb = QCheckBox("Kirim iou")
+        self.send_iou_cb = QCheckBox("Kirim nms")
         self.send_iou_cb.setChecked(True)
-        self.send_classes_cb = QCheckBox("Kirim classes")
+        self.send_classes_cb = QCheckBox("Kirim class")
         self.send_classes_cb.setChecked(True)
         checks_row.addWidget(self.send_threshold_cb)
         checks_row.addWidget(self.send_iou_cb)
@@ -251,8 +251,8 @@ class MainWindow(QMainWindow):
         checks_row.addStretch(1)
         outer.addLayout(checks_row)
 
-        # ---- Toggle modul: detection & crowd counting ----
-        modules_box = QGroupBox("Modul aktif")
+        # ---- Toggle modul: detection & crowd counting & overlay ----
+        modules_box = QGroupBox("Modul aktif (User)")
         modules_layout = QHBoxLayout(modules_box)
 
         self.detection_enabled_cb = QCheckBox("Detection")
@@ -265,10 +265,81 @@ class MainWindow(QMainWindow):
         self.crowd_enabled_cb.setTristate(False)
         modules_layout.addWidget(self.crowd_enabled_cb)
 
+        self.overlay_enabled_cb = QCheckBox("Overlay")
+        self.overlay_enabled_cb.setChecked(True)
+        self.overlay_enabled_cb.setTristate(False)
+        modules_layout.addWidget(self.overlay_enabled_cb)
+
         modules_layout.addStretch(1)
         outer.addWidget(modules_box)
 
-        self.send_btn = QPushButton("Kirim config_command")
+        # ---- Golongan Semi-Dev: butuh restart aplikasi ----
+        semidev_box = QGroupBox("Parameter Semi-Dev (butuh restart aplikasi)")
+        semidev_form = QFormLayout(semidev_box)
+
+        self.crowd_interval_cb = QCheckBox("crowd_interval:")
+        self.crowd_interval_spin = QDoubleSpinBox()
+        self.crowd_interval_spin.setDecimals(0)
+        self.crowd_interval_spin.setRange(1, 60)
+        self.crowd_interval_spin.setValue(5)
+        row1 = QHBoxLayout()
+        row1.addWidget(self.crowd_interval_cb)
+        row1.addWidget(self.crowd_interval_spin)
+        semidev_form.addRow(row1)
+
+        self.crowd_width_cb = QCheckBox("crowd_width:")
+        self.crowd_width_spin = QDoubleSpinBox()
+        self.crowd_width_spin.setDecimals(0)
+        self.crowd_width_spin.setRange(256, 2048)
+        self.crowd_width_spin.setValue(1024)
+        row2 = QHBoxLayout()
+        row2.addWidget(self.crowd_width_cb)
+        row2.addWidget(self.crowd_width_spin)
+        semidev_form.addRow(row2)
+
+        self.crowd_height_cb = QCheckBox("crowd_height:")
+        self.crowd_height_spin = QDoubleSpinBox()
+        self.crowd_height_spin.setDecimals(0)
+        self.crowd_height_spin.setRange(256, 2048)
+        self.crowd_height_spin.setValue(768)
+        row3 = QHBoxLayout()
+        row3.addWidget(self.crowd_height_cb)
+        row3.addWidget(self.crowd_height_spin)
+        semidev_form.addRow(row3)
+
+        self.infer_size_cb = QCheckBox("infer_size:")
+        self.infer_size_spin = QDoubleSpinBox()
+        self.infer_size_spin.setDecimals(0)
+        self.infer_size_spin.setRange(320, 1920)
+        self.infer_size_spin.setValue(832)
+        row4 = QHBoxLayout()
+        row4.addWidget(self.infer_size_cb)
+        row4.addWidget(self.infer_size_spin)
+        semidev_form.addRow(row4)
+
+        self.bitrate_cb = QCheckBox("bitrate_kbps:")
+        self.bitrate_spin = QDoubleSpinBox()
+        self.bitrate_spin.setDecimals(0)
+        self.bitrate_spin.setRange(500, 20000)
+        self.bitrate_spin.setValue(2000)
+        row5 = QHBoxLayout()
+        row5.addWidget(self.bitrate_cb)
+        row5.addWidget(self.bitrate_spin)
+        semidev_form.addRow(row5)
+
+        self.reconnect_cb = QCheckBox("reconnect_ms:")
+        self.reconnect_spin = QDoubleSpinBox()
+        self.reconnect_spin.setDecimals(0)
+        self.reconnect_spin.setRange(500, 60000)
+        self.reconnect_spin.setValue(2000)
+        row6 = QHBoxLayout()
+        row6.addWidget(self.reconnect_cb)
+        row6.addWidget(self.reconnect_spin)
+        semidev_form.addRow(row6)
+
+        outer.addWidget(semidev_box)
+
+        self.send_btn = QPushButton("Kirim cmd")
         self.send_btn.clicked.connect(self._on_send_clicked)
         self.send_btn.setEnabled(False)
         outer.addWidget(self.send_btn)
@@ -471,12 +542,17 @@ class MainWindow(QMainWindow):
     def _handle_ack(self, msg: dict):
         status = msg.get("status")
         color = "#2a2" if status == "applied" else "#b33"
+        restart_note = ""
+        if msg.get("requires_restart"):
+            restart_note = "  ⚠ butuh restart aplikasi"
+        reason = msg.get("reason")
+        reason_note = f"  ({reason})" if reason else ""
+
         self.ack_label.setText(
-            f"config_ack  command_id={msg.get('command_id')}  status={status}"
+            f"config_ack  command_id={msg.get('command_id')}  status={status}{restart_note}{reason_note}"
         )
         self.ack_label.setStyleSheet(f"color: {color}; font-weight: bold;")
-        self._log(f"config_ack diterima: command_id={msg.get('command_id')} status={status}")
-
+        self._log(f"config_ack diterima: command_id={msg.get('command_id')} status={status}{restart_note}{reason_note}")
     # ------------------------------------------------------------
     # Kirim config_command
     # ------------------------------------------------------------
@@ -486,16 +562,31 @@ class MainWindow(QMainWindow):
 
         params = {}
         if self.send_threshold_cb.isChecked():
-            params["confidence_threshold"] = round(self.threshold_spin.value(), 2)
+            params["conf"] = round(self.threshold_spin.value(), 2)
         if self.send_iou_cb.isChecked():
-            params["iou_threshold"] = round(self.iou_spin.value(), 2)
+            params["nms"] = round(self.iou_spin.value(), 2)
         if self.send_classes_cb.isChecked():
             classes_text = self.classes_edit.text().strip()
             classes_list = [c.strip() for c in classes_text.split(",") if c.strip()]
-            params["classes_enabled"] = classes_list
+            params["class"] = classes_list
 
-        params["detection_enabled"] = self.detection_enabled_cb.isChecked()
-        params["crowd_counting_enabled"] = self.crowd_enabled_cb.isChecked()
+        params["detect"] = self.detection_enabled_cb.isChecked()
+        params["crowd"] = self.crowd_enabled_cb.isChecked()
+        params["overlay"] = self.overlay_enabled_cb.isChecked()
+
+        # ---- Golongan Semi-Dev: hanya dikirim kalau checkbox-nya dicentang ----
+        if self.crowd_interval_cb.isChecked():
+            params["crowd_interval"] = int(self.crowd_interval_spin.value())
+        if self.crowd_width_cb.isChecked():
+            params["crowd_width"] = int(self.crowd_width_spin.value())
+        if self.crowd_height_cb.isChecked():
+            params["crowd_height"] = int(self.crowd_height_spin.value())
+        if self.infer_size_cb.isChecked():
+            params["infer_size"] = int(self.infer_size_spin.value())
+        if self.bitrate_cb.isChecked():
+            params["bitrate_kbps"] = int(self.bitrate_spin.value())
+        if self.reconnect_cb.isChecked():
+            params["reconnect_ms"] = int(self.reconnect_spin.value())
 
         if not params:
             QMessageBox.information(self, "Tidak ada parameter",
@@ -504,7 +595,7 @@ class MainWindow(QMainWindow):
 
         command_id = str(uuid.uuid4())
         payload = {
-            "type": "config_command",
+            "type": "cmd",
             "command_id": command_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "params": params,
@@ -512,7 +603,7 @@ class MainWindow(QMainWindow):
 
         ok = self.ws_thread.send(payload)
         if ok:
-            self._log(f"-> Mengirim config_command: {json.dumps(params)}")
+            self._log(f"-> Mengirim cmd: {json.dumps(params)}")
             self.ack_label.setText(f"Menunggu config_ack untuk command_id={command_id} ...")
             self.ack_label.setStyleSheet("color: #888;")
         else:

@@ -6,6 +6,8 @@
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+#include <array>
+
 // ---------------------------------------------------
 // Logging
 // ---------------------------------------------------
@@ -42,6 +44,16 @@ std::string isoTimestampNow() {
     oss << '.' << std::setfill('0') << std::setw(3) << ms.count() << 'Z';
     return oss.str();
 }
+
+// ------------------------------------------------------------------
+// Whitelist key FULL-DEV yang SENGAJA ditolak kalau muncul di params
+// "cmd". Parameter ini hanya boleh diubah lewat edit config.ini manual
+// + restart, bukan lewat WebSocket -- alasan detail ada di komentar
+// struct AIConfig (APIController.h).
+// ------------------------------------------------------------------
+const std::array<std::string, 3> kFullDevOnlyKeys = {
+    "ip_address", "api_port", "api_host"
+};
 
 }  // namespace
 
@@ -122,7 +134,8 @@ void APIController::broadcastDetections(long frame_id,
 
 void APIController::broadcastStatus(const std::string& model_name,
                                      double fps,
-                                     const AIConfig& cfg,
+                                     double currentConfidenceThreshold,
+                                     const std::set<std::string>& currentClasses,
                                      bool detection_enabled,
                                      bool crowd_counting_enabled) {
     json j;
@@ -131,12 +144,12 @@ void APIController::broadcastStatus(const std::string& model_name,
     j["status"] = "running";
     j["model"] = model_name;
     j["fps"] = fps;
-    j["current_threshold"] = cfg.confidence_threshold;
+    j["current_threshold"] = currentConfidenceThreshold;
     j["detection_enabled"] = detection_enabled;
     j["crowd_counting_enabled"] = crowd_counting_enabled;
 
     json classes = json::array();
-    for (const auto& c : cfg.classes_enabled) classes.push_back(c);
+    for (const auto& c : currentClasses) classes.push_back(c);
     j["active_classes"] = classes;
 
     broadcastRaw(j.dump());
@@ -163,7 +176,7 @@ void APIController::onMessage(ConnHandle hdl, WsServer::message_ptr msg) {
         json j = json::parse(msg->get_payload());
         const std::string type = j.value("type", "");
 
-        if (type == "config_command") {
+        if (type == "cmd") {
             handleConfigCommand(hdl, j);
         }
         else {
@@ -179,6 +192,9 @@ void APIController::onMessage(ConnHandle hdl, WsServer::message_ptr msg) {
 // Sinkronkan AIConfig (dari command GCS) ke Config master, lalu simpan
 // ke file config.ini. Kalau appConfig_ belum di-set (setConfigStore
 // belum dipanggil), auto-save dilewati.
+//
+// Semua field opsional -- hanya field yang benar-benar dikirim di
+// command ini yang ditulis ke Config master, sisanya dipertahankan.
 // ------------------------------------------------------------------
 void APIController::persistConfig(const AIConfig& newCfg) {
     if (!appConfig_) {
@@ -188,27 +204,51 @@ void APIController::persistConfig(const AIConfig& newCfg) {
 
     std::lock_guard<std::mutex> lock(configMutex_);
 
-    appConfig_->confThresh = newCfg.confidence_threshold;
-    appConfig_->nmsThresh  = newCfg.iou_threshold;
-
-    // Konversi set<string> (class ID dalam bentuk string) -> vector<int>
-    appConfig_->targetClasses.clear();
-    for (const auto& s : newCfg.classes_enabled) {
-        try {
-            appConfig_->targetClasses.push_back(std::stoi(s));
-        } catch (const std::exception&) {
-            logWarn("classes_enabled berisi nilai non-numerik, diabaikan: " + s);
+    // ---- Golongan USER ----
+    if (newCfg.confidenceThreshold.has_value()) {
+        appConfig_->confThresh = newCfg.confidenceThreshold.value();
+    }
+    if (newCfg.iouThreshold.has_value()) {
+        appConfig_->nmsThresh = newCfg.iouThreshold.value();
+    }
+    if (newCfg.classesEnabled.has_value()) {
+        appConfig_->targetClasses.clear();
+        for (const auto& s : newCfg.classesEnabled.value()) {
+            try {
+                appConfig_->targetClasses.push_back(std::stoi(s));
+            } catch (const std::exception&) {
+                logWarn("class berisi nilai non-numerik, diabaikan: " + s);
+            }
         }
     }
-
-    // Hanya update field ini di Config master kalau memang dikirim di
-    // command (optional -- supaya command yang cuma mengubah threshold,
-    // misalnya, tidak menimpa status isDetection/isCrowdCounting).
-    if (newCfg.detection_enabled.has_value()) {
-        appConfig_->isDetection = newCfg.detection_enabled.value();
+    if (newCfg.detectionEnabled.has_value()) {
+        appConfig_->isDetection = newCfg.detectionEnabled.value();
     }
-    if (newCfg.crowd_counting_enabled.has_value()) {
-        appConfig_->isCrowdCounting = newCfg.crowd_counting_enabled.value();
+    if (newCfg.crowdCountingEnabled.has_value()) {
+        appConfig_->isCrowdCounting = newCfg.crowdCountingEnabled.value();
+    }
+    if (newCfg.showOverlay.has_value()) {
+        appConfig_->showOverlay = newCfg.showOverlay.value();
+    }
+
+    // ---- Golongan SEMI-DEV ----
+    if (newCfg.crowdInferInterval.has_value()) {
+        appConfig_->crowdInferInterval = newCfg.crowdInferInterval.value();
+    }
+    if (newCfg.crowdInputWidth.has_value()) {
+        appConfig_->crowdInputWidth = newCfg.crowdInputWidth.value();
+    }
+    if (newCfg.crowdInputHeight.has_value()) {
+        appConfig_->crowdInputHeight = newCfg.crowdInputHeight.value();
+    }
+    if (newCfg.inferSize.has_value()) {
+        appConfig_->inferSize = newCfg.inferSize.value();
+    }
+    if (newCfg.bitrateKbps.has_value()) {
+        appConfig_->bitrateKbps = newCfg.bitrateKbps.value();
+    }
+    if (newCfg.reconnectIntervalMs.has_value()) {
+        appConfig_->reconnectIntervalMs = newCfg.reconnectIntervalMs.value();
     }
 
     if (ConfigManager::saveToFile(configPath_, *appConfig_)) {
@@ -221,7 +261,7 @@ void APIController::handleConfigCommand(ConnHandle hdl, const json& j) {
     const std::string commandId = j.value("command_id", "");
 
     if (!j.contains("params")) {
-        logWarn("config_command tanpa field 'params', command_id=" + commandId);
+        logWarn("cmd tanpa field 'params', command_id=" + commandId);
 
         json ack;
         ack["type"] = "config_ack";
@@ -239,38 +279,105 @@ void APIController::handleConfigCommand(ConnHandle hdl, const json& j) {
     }
 
     const auto& params = j.at("params");
-    logInfo("Menerima config_command id=" + commandId +
+    logInfo("Menerima cmd id=" + commandId +
              " params=" + params.dump());
 
-    AIConfig cfg;
-
-    if (params.contains("confidence_threshold"))
-        cfg.confidence_threshold = params["confidence_threshold"];
-    if (params.contains("iou_threshold"))
-        cfg.iou_threshold = params["iou_threshold"];
-    if (params.contains("classes_enabled")) {
-        cfg.classes_enabled.clear();
-        for (const auto& c : params["classes_enabled"])
-            cfg.classes_enabled.insert(c.get<std::string>());
+    // ---- Golongan FULL-DEV: tolak eksplisit kalau ada yang mencoba ----
+    // Parameter ini sengaja tidak boleh diubah lewat WebSocket sama
+    // sekali (lihat penjelasan di AIConfig / APIController.h) --
+    // mengubah alamat/port API dari koneksi API itu sendiri berisiko
+    // self-lockout. Command langsung ditolak total, tidak parsial.
+    std::vector<std::string> blockedKeys;
+    for (const auto& key : kFullDevOnlyKeys) {
+        if (params.contains(key)) blockedKeys.push_back(key);
     }
-    if (params.contains("detection_enabled"))
-        cfg.detection_enabled = params["detection_enabled"].get<bool>();
-    if (params.contains("crowd_counting_enabled"))
-        cfg.crowd_counting_enabled = params["crowd_counting_enabled"].get<bool>();
+    if (!blockedKeys.empty()) {
+        std::string joined;
+        for (size_t i = 0; i < blockedKeys.size(); ++i) {
+            joined += blockedKeys[i];
+            if (i + 1 < blockedKeys.size()) joined += ", ";
+        }
+        logWarn("cmd id=" + commandId +
+                " ditolak, berisi parameter full-dev-only: " + joined);
+
+        json ack;
+        ack["type"] = "config_ack";
+        ack["command_id"] = commandId;
+        ack["status"] = "rejected";
+        ack["reason"] = "parameter berikut hanya bisa diubah lewat config.ini manual + restart: " + joined;
+        ack["timestamp"] = isoTimestampNow();
+
+        websocketpp::lib::error_code ec;
+        server_.send(hdl, ack.dump(), websocketpp::frame::opcode::text, ec);
+        if (ec) {
+            logError("Gagal mengirim ack: " + ec.message());
+        }
+        return;
+    }
+
+    AIConfig cfg;
+    bool requiresRestart = false;
+
+    // ---- Golongan USER: real-time, tanpa restart ----
+    if (params.contains("conf"))
+        cfg.confidenceThreshold = params["conf"].get<double>();
+    if (params.contains("nms"))
+        cfg.iouThreshold = params["nms"].get<double>();
+    if (params.contains("class")) {
+        std::set<std::string> classes;
+        for (const auto& c : params["class"])
+            classes.insert(c.get<std::string>());
+        cfg.classesEnabled = std::move(classes);
+    }
+    if (params.contains("detect"))
+        cfg.detectionEnabled = params["detect"].get<bool>();
+    if (params.contains("crowd"))
+        cfg.crowdCountingEnabled = params["crowd"].get<bool>();
+    if (params.contains("overlay"))
+        cfg.showOverlay = params["overlay"].get<bool>();
+
+    // ---- Golongan SEMI-DEV: ditulis ke config, sebagian butuh restart ----
+    if (params.contains("crowd_interval")) {
+        cfg.crowdInferInterval = params["crowd_interval"].get<int>();
+        requiresRestart = true; // interval saat ini di-cache sebagai local const di main.cpp
+    }
+    if (params.contains("crowd_width")) {
+        cfg.crowdInputWidth = params["crowd_width"].get<int>();
+        requiresRestart = true; // buffer CrowdCounting dialokasikan sesuai ukuran ini saat startup
+    }
+    if (params.contains("crowd_height")) {
+        cfg.crowdInputHeight = params["crowd_height"].get<int>();
+        requiresRestart = true;
+    }
+    if (params.contains("infer_size")) {
+        cfg.inferSize = params["infer_size"].get<int>();
+        requiresRestart = true; // engine YOLO di-load dengan ukuran ini saat startup
+    }
+    if (params.contains("bitrate_kbps")) {
+        cfg.bitrateKbps = params["bitrate_kbps"].get<int>();
+        requiresRestart = true; // encoder RTSP dikonfigurasi saat construct RtspServer
+    }
+    if (params.contains("reconnect_ms")) {
+        cfg.reconnectIntervalMs = params["reconnect_ms"].get<int>();
+        // TIDAK butuh restart -- dibaca langsung dari Config master tiap
+        // iterasi reconnect loop di main.cpp.
+    }
 
     bool applied = onConfigCommand_ ? onConfigCommand_(cfg) : false;
 
     if (applied) {
-        logInfo("Config command diterapkan: " + commandId);
+        logInfo("Cmd diterapkan: " + commandId +
+                (requiresRestart ? " (sebagian parameter butuh restart aplikasi untuk berlaku penuh)" : ""));
         persistConfig(cfg);   // <-- auto-save di sini
     } else {
-        logWarn("Config command ditolak: " + commandId);
+        logWarn("Cmd ditolak: " + commandId);
     }
 
     json ack;
     ack["type"] = "config_ack";
     ack["command_id"] = commandId;
     ack["status"] = applied ? "applied" : "rejected";
+    ack["requires_restart"] = applied && requiresRestart;
     ack["timestamp"] = isoTimestampNow();
 
     websocketpp::lib::error_code ec;
