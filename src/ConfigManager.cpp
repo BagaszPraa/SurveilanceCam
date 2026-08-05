@@ -203,6 +203,9 @@ bool ConfigManager::saveToFile(const std::string& path, const Config& cfg) {
     file << "bitrate_kbps = " << cfg.bitrateKbps << "\n";
     file << "api_port = " << cfg.apiPort << "\n";
     file << "api_host = " << cfg.apiHost << "\n";
+    file << "is_detection = " << (cfg.isDetection ? "true" : "false") << "\n";
+    file << "is_crowd_counting = " << (cfg.isCrowdCounting ? "true" : "false") << "\n";
+    file << "crowd_model = " << cfg.crowdModelPath << "\n";
 
     file.close();
 
@@ -243,6 +246,9 @@ void ConfigManager::applyCliArgs(int argc, char* argv[], Config& cfg) {
         else if (arg == "--bitrate")         cfg.bitrateKbps = std::stoi(nextVal(std::to_string(cfg.bitrateKbps).c_str()));
         else if (arg == "--api-port")        cfg.apiPort = std::stoi(nextVal(std::to_string(cfg.apiPort).c_str()));
         else if (arg == "--api-host")        cfg.apiHost = nextVal(cfg.apiHost.c_str());
+        else if (arg == "--is-detection")    cfg.isDetection = true;
+        else if (arg == "--is_crowd_counting") cfg.isCrowdCounting = false;
+        else if (arg == "--crowd-model")      cfg.crowdModelPath = nextVal(cfg.crowdModelPath.c_str());
     }
 }
 
