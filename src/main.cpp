@@ -118,29 +118,26 @@ int main(int argc, char* argv[]) {
     const int crowdInferInterval = (_appConfig.crowdInferInterval > 0)
                                         ? _appConfig.crowdInferInterval
                                         : 5;
-
-    if (_appConfig.isCrowdCounting) {
-        try {
-            cv::Size crowdInputSize(
-                _appConfig.crowdInputWidth  > 0 ? _appConfig.crowdInputWidth  : 1024,
-                _appConfig.crowdInputHeight > 0 ? _appConfig.crowdInputHeight : 768
-            );
-
-            crowdCounter = std::make_unique<CrowdCounting>(_appConfig.crowdModelPath, crowdInputSize);
-            logInfo("Modul Crowd Counting aktif. Engine: " + _appConfig.crowdModelPath +
-                    " | input: " + std::to_string(crowdInputSize.width) + "x" + std::to_string(crowdInputSize.height) +
-                    " | interval: tiap " + std::to_string(crowdInferInterval) + " frame");
-        } catch (const std::exception& e) {
-            logError("Gagal load model Crowd Counting: " + std::string(e.what()));
-            logWarn("Modul Crowd Counting dinonaktifkan, aplikasi tetap berjalan tanpa fitur ini.");
-            crowdCounter.reset(); // pastikan null, jangan biarkan pointer setengah-inisialisasi
-        }
-    } else {
-        logInfo("Modul Crowd Counting nonaktif (isCrowdCounting=false).");
+    try {
+        cv::Size crowdInputSize(
+            _appConfig.crowdInputWidth  > 0 ? _appConfig.crowdInputWidth  : 1024,
+            _appConfig.crowdInputHeight > 0 ? _appConfig.crowdInputHeight : 768
+        );
+        crowdCounter = std::make_unique<CrowdCounting>(_appConfig.crowdModelPath, crowdInputSize);
+        logInfo("Modul Crowd Counting aktif. Engine: " + _appConfig.crowdModelPath +
+                " | input: " + std::to_string(crowdInputSize.width) + "x" + std::to_string(crowdInputSize.height) +
+                " | interval: tiap " + std::to_string(crowdInferInterval) + " frame");
+    } catch (const std::exception& e) {
+        logError("Gagal load model Crowd Counting: " + std::string(e.what()));
+        logWarn("Modul Crowd Counting dinonaktifkan, aplikasi tetap berjalan tanpa fitur ini.");
+        crowdCounter.reset(); // pastikan null, jangan biarkan pointer setengah-inisialisasi
     }
 
     if (!_appConfig.isDetection) {
         logInfo("Modul Detection nonaktif (isDetection=false).");
+    }
+    if (!_appConfig.isCrowdCounting) {
+        logInfo("Modul Crowd Counting nonaktif (isCrowdCounting=false).");
     }
 
     RuntimeAIConfig runtimeAiConfig;
