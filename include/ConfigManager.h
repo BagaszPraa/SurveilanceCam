@@ -39,6 +39,9 @@ struct Config {
     bool isDetection;     // aktifkan modul deteksi (YOLO)
     bool isCrowdCounting; // aktifkan modul crowd counting (heatmap + estimasi
     std::string crowdModelPath; // path ke model crowd counting
+    int         crowdInputWidth     = 1024;
+    int         crowdInputHeight    = 768;
+    int         crowdInferInterval  = 10;   // 1 = tiap frame, N = tiap N frame
 };
 class ConfigManager {
 public:

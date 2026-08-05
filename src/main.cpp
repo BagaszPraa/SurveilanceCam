@@ -103,18 +103,33 @@ int main(int argc, char* argv[]) {
     }
 
     // ---- Modul Crowd Counting, hanya dimuat kalau flag aktif ----
-    // NOTE: isDetection & isCrowdCounting diasumsikan ada sebagai field bool
-    // di struct Config (main.h) dan dibaca dari config.ini lewat ConfigManager.
-    // crowdInputWidth/crowdInputHeight opsional -- kalau tidak di-set di
-    // config, pakai default constructor CrowdCounting (1024x768, sesuai
-    // optShapes saat build engine).
+    // Ukuran input & interval bisa diatur dari config.ini supaya gampang
+    // di-tuning tanpa perlu rebuild/redeploy binary (lihat catatan FPS
+    // drop -- VGG-19 backbone DM-Count jauh lebih berat dari YOLO, jadi
+    // resolusi & interval infer perlu di-tuning sesuai kebutuhan).
     std::unique_ptr<CrowdCounting> crowdCounter;
+    CrowdCountResult lastCrowdResult;   // cache hasil infer terakhir (dipakai antar-frame saat interval > 1)
+    long crowdFrameCounter = 0;
+
+    // Interval berapa frame sekali crowd counting benar-benar dijalankan.
+    // 1 = tiap frame (paling berat), 5 = tiap 5 frame (lebih ringan, count
+    // ter-update tiap ~5 frame -- cukup untuk monitoring kerumunan yang
+    // tidak berubah drastis dalam hitungan ratus milidetik).
+    const int crowdInferInterval = (_appConfig.crowdInferInterval > 0)
+                                        ? _appConfig.crowdInferInterval
+                                        : 5;
+
     if (_appConfig.isCrowdCounting) {
         try {
-            cv::Size crowdInputSize(1024,768);
+            cv::Size crowdInputSize(
+                _appConfig.crowdInputWidth  > 0 ? _appConfig.crowdInputWidth  : 1024,
+                _appConfig.crowdInputHeight > 0 ? _appConfig.crowdInputHeight : 768
+            );
 
             crowdCounter = std::make_unique<CrowdCounting>(_appConfig.crowdModelPath, crowdInputSize);
-            logInfo("Modul Crowd Counting aktif. Engine: " + _appConfig.crowdModelPath);
+            logInfo("Modul Crowd Counting aktif. Engine: " + _appConfig.crowdModelPath +
+                    " | input: " + std::to_string(crowdInputSize.width) + "x" + std::to_string(crowdInputSize.height) +
+                    " | interval: tiap " + std::to_string(crowdInferInterval) + " frame");
         } catch (const std::exception& e) {
             logError("Gagal load model Crowd Counting: " + std::string(e.what()));
             logWarn("Modul Crowd Counting dinonaktifkan, aplikasi tetap berjalan tanpa fitur ini.");
@@ -312,10 +327,19 @@ int main(int argc, char* argv[]) {
         // untuk ditulis dari dua sisi sekaligus.
         std::vector<Detection> detections;
         double inferMs = 0.0;
-        CrowdCountResult crowdResult; // default kosong kalau modul nonaktif
+        CrowdCountResult crowdResult = lastCrowdResult; // [BARU] default: pakai cache frame sebelumnya
 
         std::future<std::vector<Detection>> detectionFuture;
         std::future<CrowdCountResult> crowdFuture;
+
+        // [BARU] Crowd counting cuma benar-benar dijalankan tiap crowdInferInterval
+        // frame -- VGG-19 backbone DM-Count jauh lebih berat dari YOLO, dan
+        // kerumunan tidak berubah drastis dalam hitungan ratus milidetik, jadi
+        // tidak perlu di-infer setiap frame. Di frame yang di-skip, overlay tetap
+        // pakai lastCrowdResult (cache).
+        const bool shouldRunCrowdThisFrame =
+            _appConfig.isCrowdCounting && crowdCounter &&
+            (crowdFrameCounter % crowdInferInterval == 0);
 
         auto t0 = std::chrono::steady_clock::now();
 
@@ -326,11 +350,15 @@ int main(int argc, char* argv[]) {
             });
         }
 
-        if (_appConfig.isCrowdCounting && crowdCounter) {
+        if (shouldRunCrowdThisFrame) {
             cv::Mat crowdFrame = frame.clone(); // clone supaya aman dari race
             crowdFuture = std::async(std::launch::async, [&crowdCounter, crowdFrame]() {
                 return crowdCounter->infer(crowdFrame);
             });
+        }
+
+        if (_appConfig.isCrowdCounting && crowdCounter) {
+            ++crowdFrameCounter; // [BARU] hitung tiap frame video, bukan tiap infer
         }
 
         // ---- Join: tunggu kedua worker selesai sebelum lanjut ke postprocessing ----
@@ -340,6 +368,7 @@ int main(int argc, char* argv[]) {
         }
         if (crowdFuture.valid()) {
             crowdResult = crowdFuture.get();
+            lastCrowdResult = crowdResult; // [BARU] update cache untuk frame-frame berikutnya
         }
 
         auto t1 = std::chrono::steady_clock::now();

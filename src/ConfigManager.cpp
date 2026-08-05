@@ -151,6 +151,9 @@ bool ConfigManager::loadFromFile(const std::string& path, Config& cfg) {
             else if (key == "is_detection")          cfg.isDetection = parseBool(value);
             else if (key == "is_crowd_counting")     cfg.isCrowdCounting = parseBool(value);
             else if (key == "crowd_model")           cfg.crowdModelPath = value;
+            else if (key == "crowd_input_width")    cfg.crowdInputWidth = std::stoi(value);
+            else if (key == "crowd_input_height")   cfg.crowdInputHeight = std::stoi(value);
+            else if (key == "crowd_infer_interval") cfg.crowdInferInterval = std::stoi(value);
             else logWarn("Key tidak dikenal di baris " + std::to_string(lineNo) + ": " + key);
         } catch (const std::exception& e) {
             logWarn("Gagal parsing baris " + std::to_string(lineNo) + " (" + key + "=" + value + "): " + e.what());
@@ -206,6 +209,9 @@ bool ConfigManager::saveToFile(const std::string& path, const Config& cfg) {
     file << "is_detection = " << (cfg.isDetection ? "true" : "false") << "\n";
     file << "is_crowd_counting = " << (cfg.isCrowdCounting ? "true" : "false") << "\n";
     file << "crowd_model = " << cfg.crowdModelPath << "\n";
+    file << "crowd_input_width = "    << cfg.crowdInputWidth    << "\n";
+    file << "crowd_input_height = "   << cfg.crowdInputHeight   << "\n";
+    file << "crowd_infer_interval = " << cfg.crowdInferInterval << "\n";
 
     file.close();
 
