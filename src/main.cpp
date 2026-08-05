@@ -105,15 +105,20 @@ int main(int argc, char* argv[]) {
     // ---- Modul Crowd Counting, hanya dimuat kalau flag aktif ----
     // NOTE: isDetection & isCrowdCounting diasumsikan ada sebagai field bool
     // di struct Config (main.h) dan dibaca dari config.ini lewat ConfigManager.
-    // Silakan sesuaikan nama field & parsing-nya dengan struct Config yang asli.
+    // crowdInputWidth/crowdInputHeight opsional -- kalau tidak di-set di
+    // config, pakai default constructor CrowdCounting (1024x768, sesuai
+    // optShapes saat build engine).
     std::unique_ptr<CrowdCounting> crowdCounter;
     if (_appConfig.isCrowdCounting) {
         try {
-            crowdCounter = std::make_unique<CrowdCounting>(_appConfig.crowdModelPath);
-            logInfo("Modul Crowd Counting aktif.");
+            cv::Size crowdInputSize(1024,768);
+
+            crowdCounter = std::make_unique<CrowdCounting>(_appConfig.crowdModelPath, crowdInputSize);
+            logInfo("Modul Crowd Counting aktif. Engine: " + _appConfig.crowdModelPath);
         } catch (const std::exception& e) {
             logError("Gagal load model Crowd Counting: " + std::string(e.what()));
-            return 1;
+            logWarn("Modul Crowd Counting dinonaktifkan, aplikasi tetap berjalan tanpa fitur ini.");
+            crowdCounter.reset(); // pastikan null, jangan biarkan pointer setengah-inisialisasi
         }
     } else {
         logInfo("Modul Crowd Counting nonaktif (isCrowdCounting=false).");

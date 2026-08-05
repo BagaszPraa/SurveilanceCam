@@ -26,18 +26,23 @@ struct CrowdCountResult {
     bool    valid = false;
 };
 
-// Modul Crowd Counting berbasis density-map network yang sudah di-*build*
-// jadi TensorRT engine (.engine), mis. hasil convert dari CSRNet/MCNN ONNX
-// lewat `trtexec --onnx=model.onnx --saveEngine=model.engine`.
+// Modul Crowd Counting berbasis density-map network (DM-Count, VGG-19
+// backbone) yang sudah di-*build* jadi TensorRT engine FP32, mis. hasil:
+//   trtexec --onnx=model_qnrf.onnx --saveEngine=model_qnrf.engine \
+//           --minShapes=input:1x3x256x256 \
+//           --optShapes=input:1x3x768x1024 \
+//           --maxShapes=input:1x3x1536x2048
 //
 // PENTING soal file .engine:
 // - File .engine bersifat spesifik terhadap GPU dan versi TensorRT yang
-//   dipakai saat build. Engine yang di-build di RTX 3060 + TensorRT 8.6
-//   TIDAK akan jalan di Jetson Orin atau versi TensorRT lain -- harus
-//   di-rebuild ulang di target device yang sebenarnya.
+//   dipakai saat build. Engine yang di-build di satu device/versi TensorRT
+//   TIDAK akan jalan di device/versi TensorRT lain -- harus di-rebuild
+//   ulang di target device yang sebenarnya.
 // - Kode ini ditulis untuk TensorRT 10+/11.x API (setTensorAddress by name +
-//   enqueueV3). Kalau kamu masih pakai TensorRT 8.x, API-nya berbeda
-//   (getBindingIndex/enqueueV2) -- versi lama itu SUDAH deprecated di 10+.
+//   enqueueV3).
+// - Engine WAJIB bertipe FP32 murni di tensor input & output (dibuild dari
+//   ONNX FP32 tanpa konversi manual ke FP16). loadEngine() akan memvalidasi
+//   ini dan throw kalau ternyata engine-nya FP16/INT8.
 //
 // Thread-safety: satu instance CrowdCounting TIDAK boleh dipanggil infer()
 // dari dua thread secara bersamaan (context TensorRT + buffer GPU dipakai
@@ -47,16 +52,14 @@ struct CrowdCountResult {
 // berikutnya, jadi tidak ada pemanggilan konkuren ke instance yang sama.
 class CrowdCounting {
 public:
-    // enginePath : path ke file .engine hasil build TensorRT.
-    // inputSize  : ukuran H x W yang dipakai engine (harus sama dengan
-    //              shape yang dipakai saat build engine; kalau engine
-    //              dibangun dengan explicit dynamic shape, ukuran ini yang
-    //              dipakai untuk setBindingDimensions).
-    // useFp16    : informasi saja untuk logging -- precision sebenarnya
-    //              sudah "terbakar" di dalam file .engine saat di-build.
+    // enginePath : path ke file .engine hasil build TensorRT (FP32).
+    // inputSize  : ukuran (width, height) yang dipakai untuk inferensi.
+    //              HARUS berada dalam rentang minShapes/maxShapes profile
+    //              yang dipakai saat build engine. Default 1024x768 sesuai
+    //              optShapes yang dipakai saat build
+    //              (optShapes=input:1x3x768x1024 -> H=768, W=1024).
     CrowdCounting(const std::string& enginePath,
-                  const cv::Size& inputSize = cv::Size(384, 384),
-                  bool useFp16 = true);
+                  const cv::Size& inputSize = cv::Size(1024, 768));
 
     ~CrowdCounting();
 
@@ -84,11 +87,14 @@ private:
     // TensorRT 10+/11: binding tidak lagi pakai index, tapi nama tensor.
     std::string inputName_;
     std::string outputName_;
+    // "density_map" -- output yang dipakai
+    std::vector<std::string> extraOutputNames_;  // output lain yang wajib di-set address-nya tapi tidak dipakai
+    std::vector<void*> extraOutputBuffers_;      // device buffer untuk extraOutputNames_
 
     void* deviceInputBuffer_  = nullptr;
     void* deviceOutputBuffer_ = nullptr;
 
-    cv::Size inputSize_;      // H x W input ke model
+    cv::Size inputSize_;      // width x height input ke model
     int      inputChannels_ = 3;
     int      outputHeight_  = 0; // diisi dari shape output engine
     int      outputWidth_   = 0;
@@ -97,6 +103,5 @@ private:
     std::vector<float> hostOutputBuffer_;
 
     float      heatmapThreshold_ = 1e-4f;
-    bool       useFp16_ = true;
     std::mutex inferMutex_;
 };

@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <cmath>
 #include <algorithm>
+#include <cstring>
 
 namespace {
 
@@ -36,6 +37,17 @@ TrtLogger& trtLogger() {
     return instance;
 }
 
+const char* dataTypeToString(nvinfer1::DataType dt) {
+    switch (dt) {
+        case nvinfer1::DataType::kFLOAT: return "FP32";
+        case nvinfer1::DataType::kHALF:  return "FP16";
+        case nvinfer1::DataType::kINT8:  return "INT8";
+        case nvinfer1::DataType::kINT32: return "INT32";
+        case nvinfer1::DataType::kBOOL:  return "BOOL";
+        default: return "UNKNOWN";
+    }
+}
+
 #define CUDA_CHECK(call)                                                          \
     do {                                                                          \
         cudaError_t status = (call);                                              \
@@ -49,25 +61,24 @@ TrtLogger& trtLogger() {
 } // namespace
 
 CrowdCounting::CrowdCounting(const std::string& enginePath,
-                              const cv::Size& inputSize,
-                              bool useFp16)
-    : inputSize_(inputSize), useFp16_(useFp16) {
+                              const cv::Size& inputSize)
+    : inputSize_(inputSize) {
     loadEngine(enginePath);
     allocateBuffers();
 
     logInfo("Engine dimuat: " + enginePath +
             " | input: " + std::to_string(inputSize_.width) + "x" + std::to_string(inputSize_.height) +
-            " | output density map: " + std::to_string(outputWidth_) + "x" + std::to_string(outputHeight_) +
-            " | precision: " + std::string(useFp16_ ? "FP16" : "FP32 (asumsi, sesuai build engine)"));
+            " | output density map: " + std::to_string(outputWidth_) + "x" + std::to_string(outputHeight_));
 }
 
 CrowdCounting::~CrowdCounting() {
     if (deviceInputBuffer_)  cudaFree(deviceInputBuffer_);
     if (deviceOutputBuffer_) cudaFree(deviceOutputBuffer_);
-    if (stream_)             cudaStreamDestroy(stream_);
+    for (void* buf : extraOutputBuffers_) {
+        if (buf) cudaFree(buf);
+    }
+    if (stream_) cudaStreamDestroy(stream_);
 
-    // TensorRT 10+/11: destroy() sudah dihapus dari API, sekarang objek
-    // di-delete langsung (destructor virtual sudah disediakan TensorRT).
     delete context_;
     delete engine_;
     delete runtime_;
@@ -103,48 +114,91 @@ void CrowdCounting::loadEngine(const std::string& enginePath) {
         throw std::runtime_error("Gagal membuat execution context dari engine.");
     }
 
-    // ---- Cari nama tensor input & output ----
-    // TensorRT 10+/11: tidak ada lagi binding index, semua diakses lewat
-    // nama tensor. Asumsi: engine punya tepat 1 input dan 1 output
-    // (density map). Kalau modelmu multi-output, sesuaikan di sini.
+    // ---- Cari nama tensor input & SEMUA tensor output ----
+    // Engine DM-Count ini punya 2 output: "density_map" (dipakai) dan
+    // "div" (output tambahan dari model, kemungkinan mu_normed -- tidak
+    // dipakai, tapi TensorRT tetap WAJIB diberi address sebelum enqueueV3).
     const int nbIO = engine_->getNbIOTensors();
+    std::vector<std::string> outputNames;
+
+    logInfo("Jumlah IO tensor pada engine: " + std::to_string(nbIO));
     for (int i = 0; i < nbIO; ++i) {
         const char* name = engine_->getIOTensorName(i);
-        if (engine_->getTensorIOMode(name) == nvinfer1::TensorIOMode::kINPUT) {
+        const auto mode = engine_->getTensorIOMode(name);
+        logInfo(std::string("  [") + std::to_string(i) + "] " + name +
+                " -- mode: " + (mode == nvinfer1::TensorIOMode::kINPUT ? "INPUT" : "OUTPUT"));
+
+        if (mode == nvinfer1::TensorIOMode::kINPUT) {
             inputName_ = name;
         } else {
-            outputName_ = name;
+            outputNames.emplace_back(name);
         }
     }
 
-    if (inputName_.empty() || outputName_.empty()) {
+    if (inputName_.empty() || outputNames.empty()) {
         throw std::runtime_error("Tidak bisa menemukan tensor input/output pada engine.");
+    }
+
+    // Pilih output utama: prioritaskan nama "density_map". Kalau tidak
+    // ada (misal beda versi export), fallback ke output pertama + warning.
+    auto it = std::find(outputNames.begin(), outputNames.end(), "density_map");
+    if (it != outputNames.end()) {
+        outputName_ = *it;
+    } else {
+        outputName_ = outputNames.front();
+        logWarn("Tidak ditemukan output bernama 'density_map', memakai '" +
+                outputName_ + "' sebagai output utama -- cek ulang arsitektur/export model.");
+    }
+
+    // Simpan nama output lain yang tidak dipakai (mis. "div") supaya bisa
+    // dialokasikan buffer dummy dan di-set address-nya di infer().
+    extraOutputNames_.clear();
+    for (const auto& name : outputNames) {
+        if (name != outputName_) extraOutputNames_.push_back(name);
+    }
+    for (const auto& name : extraOutputNames_) {
+        logInfo("Output tambahan (tidak dipakai, tetap wajib di-set address): " + name);
+    }
+
+    // ---- Validasi tipe data tensor: kode ini hanya support engine FP32 ----
+    const nvinfer1::DataType inputDType  = engine_->getTensorDataType(inputName_.c_str());
+    const nvinfer1::DataType outputDType = engine_->getTensorDataType(outputName_.c_str());
+    if (inputDType != nvinfer1::DataType::kFLOAT || outputDType != nvinfer1::DataType::kFLOAT) {
+        throw std::runtime_error(
+            "Engine ini bukan FP32 murni (input=" + std::string(dataTypeToString(inputDType)) +
+            ", output=" + std::string(dataTypeToString(outputDType)) + "). "
+            "Kelas CrowdCounting saat ini hanya support engine FP32.");
     }
 
     // ---- Set shape input kalau engine pakai dynamic shape ----
     nvinfer1::Dims inputDims = engine_->getTensorShape(inputName_.c_str());
-    // Format umum NCHW: [batch, channel, H, W]. Dimensi bernilai -1 berarti
-    // dynamic, ditimpa dengan inputSize_ yang dikonfigurasi.
     if (inputDims.nbDims == 4) {
         if (inputDims.d[0] < 0) inputDims.d[0] = 1; // batch = 1
+        inputChannels_ = (inputDims.d[1] > 0) ? inputDims.d[1] : 3;
         if (inputDims.d[2] < 0) inputDims.d[2] = inputSize_.height;
         if (inputDims.d[3] < 0) inputDims.d[3] = inputSize_.width;
-        inputChannels_ = (inputDims.d[1] > 0) ? inputDims.d[1] : 3;
 
         if (!context_->setInputShape(inputName_.c_str(), inputDims)) {
-            throw std::runtime_error("setInputShape gagal -- cek profile shape engine cocok dengan inputSize.");
+            throw std::runtime_error(
+                "setInputShape gagal untuk ukuran " +
+                std::to_string(inputSize_.width) + "x" + std::to_string(inputSize_.height) +
+                " -- pastikan ukuran ini berada dalam rentang minShapes/maxShapes engine.");
         }
     } else {
         throw std::runtime_error("Bentuk dimensi input engine tidak dikenali (harap NCHW rank 4).");
     }
 
-    // ---- Ambil shape output setelah shape input di-set ----
+    // ---- Ambil shape output utama setelah shape input di-set ----
     nvinfer1::Dims outputDims = context_->getTensorShape(outputName_.c_str());
     if (outputDims.nbDims < 2) {
         throw std::runtime_error("Bentuk dimensi output engine tidak dikenali.");
     }
     outputHeight_ = outputDims.d[outputDims.nbDims - 2];
     outputWidth_  = outputDims.d[outputDims.nbDims - 1];
+
+    if (outputHeight_ <= 0 || outputWidth_ <= 0) {
+        throw std::runtime_error("Output density map memiliki dimensi tidak valid setelah setInputShape.");
+    }
 }
 
 void CrowdCounting::allocateBuffers() {
@@ -158,6 +212,23 @@ void CrowdCounting::allocateBuffers() {
 
     CUDA_CHECK(cudaMalloc(&deviceInputBuffer_,  inputElements  * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&deviceOutputBuffer_, outputElements * sizeof(float)));
+
+    // Alokasikan buffer dummy untuk output tambahan (mis. "div") -- tidak
+    // dipakai isinya, tapi TensorRT WAJIB diberi address yang valid untuk
+    // setiap output tensor sebelum enqueueV3, kalau tidak akan error:
+    // "Neither address or allocator is set for output tensor ..."
+    for (const auto& name : extraOutputNames_) {
+        nvinfer1::Dims dims = context_->getTensorShape(name.c_str());
+        size_t elems = 1;
+        for (int d = 0; d < dims.nbDims; ++d) {
+            elems *= (dims.d[d] > 0 ? static_cast<size_t>(dims.d[d]) : 1);
+        }
+        void* buf = nullptr;
+        CUDA_CHECK(cudaMalloc(&buf, elems * sizeof(float)));
+        extraOutputBuffers_.push_back(buf);
+        logInfo("Buffer dummy dialokasikan untuk output '" + name + "': " +
+                std::to_string(elems) + " elemen");
+    }
 }
 
 cv::Mat CrowdCounting::preprocess(const cv::Mat& frame) const {
@@ -170,8 +241,9 @@ cv::Mat CrowdCounting::preprocess(const cv::Mat& frame) const {
     cv::Mat floatImg;
     rgb.convertTo(floatImg, CV_32FC3, 1.0 / 255.0);
 
-    // Normalisasi ImageNet-style, umum dipakai backbone VGG/ResNet pada
-    // density-map network. Sesuaikan kalau model kamu pakai normalisasi lain.
+    // Normalisasi ImageNet-style, sesuai preprocessing training DM-Count
+    // (backbone VGG-19). Sesuaikan kalau checkpoint kamu pakai normalisasi
+    // lain.
     cv::subtract(floatImg, cv::Scalar(0.485, 0.456, 0.406), floatImg);
     cv::divide(floatImg, cv::Scalar(0.229, 0.224, 0.225), floatImg);
 
@@ -215,7 +287,11 @@ CrowdCountResult CrowdCounting::infer(const cv::Mat& frame) {
         if (!context_->setTensorAddress(outputName_.c_str(), deviceOutputBuffer_)) {
             throw std::runtime_error("setTensorAddress gagal untuk tensor output: " + outputName_);
         }
-
+        for (size_t i = 0; i < extraOutputNames_.size(); ++i) {
+            if (!context_->setTensorAddress(extraOutputNames_[i].c_str(), extraOutputBuffers_[i])) {
+                throw std::runtime_error("setTensorAddress gagal untuk output tambahan: " + extraOutputNames_[i]);
+            }
+        }
         if (!context_->enqueueV3(stream_)) {
             throw std::runtime_error("enqueueV3 gagal dijalankan.");
         }
