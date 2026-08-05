@@ -122,7 +122,9 @@ void APIController::broadcastDetections(long frame_id,
 
 void APIController::broadcastStatus(const std::string& model_name,
                                      double fps,
-                                     const AIConfig& cfg) {
+                                     const AIConfig& cfg,
+                                     bool detection_enabled,
+                                     bool crowd_counting_enabled) {
     json j;
     j["type"] = "ai_status";
     j["timestamp"] = isoTimestampNow();
@@ -130,6 +132,8 @@ void APIController::broadcastStatus(const std::string& model_name,
     j["model"] = model_name;
     j["fps"] = fps;
     j["current_threshold"] = cfg.confidence_threshold;
+    j["detection_enabled"] = detection_enabled;
+    j["crowd_counting_enabled"] = crowd_counting_enabled;
 
     json classes = json::array();
     for (const auto& c : cfg.classes_enabled) classes.push_back(c);
@@ -197,6 +201,16 @@ void APIController::persistConfig(const AIConfig& newCfg) {
         }
     }
 
+    // Hanya update field ini di Config master kalau memang dikirim di
+    // command (optional -- supaya command yang cuma mengubah threshold,
+    // misalnya, tidak menimpa status isDetection/isCrowdCounting).
+    if (newCfg.detection_enabled.has_value()) {
+        appConfig_->isDetection = newCfg.detection_enabled.value();
+    }
+    if (newCfg.crowd_counting_enabled.has_value()) {
+        appConfig_->isCrowdCounting = newCfg.crowd_counting_enabled.value();
+    }
+
     if (ConfigManager::saveToFile(configPath_, *appConfig_)) {
         logInfo("Config berhasil di-auto-save ke: " + configPath_);
     } else {
@@ -204,14 +218,31 @@ void APIController::persistConfig(const AIConfig& newCfg) {
     }
 }
 void APIController::handleConfigCommand(ConnHandle hdl, const json& j) {
-    AIConfig cfg;
+    const std::string commandId = j.value("command_id", "");
+
     if (!j.contains("params")) {
-        logWarn("config_command tanpa field 'params', command_id=" + j.value("command_id", ""));
-        // kirim ack rejected, return
+        logWarn("config_command tanpa field 'params', command_id=" + commandId);
+
+        json ack;
+        ack["type"] = "config_ack";
+        ack["command_id"] = commandId;
+        ack["status"] = "rejected";
+        ack["reason"] = "missing 'params' field";
+        ack["timestamp"] = isoTimestampNow();
+
+        websocketpp::lib::error_code ec;
+        server_.send(hdl, ack.dump(), websocketpp::frame::opcode::text, ec);
+        if (ec) {
+            logError("Gagal mengirim ack: " + ec.message());
+        }
+        return; // jangan lanjut ke j.at("params"), field-nya memang tidak ada
     }
+
     const auto& params = j.at("params");
-    logInfo("Menerima config_command id=" + j.value("command_id", "") +
+    logInfo("Menerima config_command id=" + commandId +
              " params=" + params.dump());
+
+    AIConfig cfg;
 
     if (params.contains("confidence_threshold"))
         cfg.confidence_threshold = params["confidence_threshold"];
@@ -222,19 +253,23 @@ void APIController::handleConfigCommand(ConnHandle hdl, const json& j) {
         for (const auto& c : params["classes_enabled"])
             cfg.classes_enabled.insert(c.get<std::string>());
     }
+    if (params.contains("detection_enabled"))
+        cfg.detection_enabled = params["detection_enabled"].get<bool>();
+    if (params.contains("crowd_counting_enabled"))
+        cfg.crowd_counting_enabled = params["crowd_counting_enabled"].get<bool>();
 
     bool applied = onConfigCommand_ ? onConfigCommand_(cfg) : false;
 
     if (applied) {
-        logInfo("Config command diterapkan: " + j.value("command_id", ""));
+        logInfo("Config command diterapkan: " + commandId);
         persistConfig(cfg);   // <-- auto-save di sini
     } else {
-        logWarn("Config command ditolak: " + j.value("command_id", ""));
+        logWarn("Config command ditolak: " + commandId);
     }
 
     json ack;
     ack["type"] = "config_ack";
-    ack["command_id"] = j.value("command_id", "");
+    ack["command_id"] = commandId;
     ack["status"] = applied ? "applied" : "rejected";
     ack["timestamp"] = isoTimestampNow();
 

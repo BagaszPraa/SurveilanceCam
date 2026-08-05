@@ -404,7 +404,7 @@ int main(int argc, char* argv[]) {
                     statusCfg.classes_enabled.insert(std::to_string(c));
                 }
             }
-            apiController.broadcastStatus(_appConfig.modelPath, displayFps, statusCfg);
+            apiController.broadcastStatus(_appConfig.modelPath, displayFps, statusCfg, _appConfig.isDetection, _appConfig.isCrowdCounting);
         }
 
         if (_appConfig.showOverlay) {

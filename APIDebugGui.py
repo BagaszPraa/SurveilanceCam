@@ -251,6 +251,23 @@ class MainWindow(QMainWindow):
         checks_row.addStretch(1)
         outer.addLayout(checks_row)
 
+        # ---- Toggle modul: detection & crowd counting ----
+        modules_box = QGroupBox("Modul aktif")
+        modules_layout = QHBoxLayout(modules_box)
+
+        self.detection_enabled_cb = QCheckBox("Detection")
+        self.detection_enabled_cb.setChecked(True)
+        self.detection_enabled_cb.setTristate(False)
+        modules_layout.addWidget(self.detection_enabled_cb)
+
+        self.crowd_enabled_cb = QCheckBox("Crowd Counting")
+        self.crowd_enabled_cb.setChecked(True)
+        self.crowd_enabled_cb.setTristate(False)
+        modules_layout.addWidget(self.crowd_enabled_cb)
+
+        modules_layout.addStretch(1)
+        outer.addWidget(modules_box)
+
         self.send_btn = QPushButton("Kirim config_command")
         self.send_btn.clicked.connect(self._on_send_clicked)
         self.send_btn.setEnabled(False)
@@ -272,11 +289,15 @@ class MainWindow(QMainWindow):
         self.current_threshold_label = QLabel("-")
         self.active_classes_label = QLabel("-")
         self.active_classes_label.setWordWrap(True)
+        self.detection_status_label = QLabel("-")
+        self.crowd_status_label = QLabel("-")
 
         form.addRow("Model:", self.model_label)
         form.addRow("FPS:", self.fps_label)
         form.addRow("Threshold aktif:", self.current_threshold_label)
         form.addRow("Class aktif:", self.active_classes_label)
+        form.addRow("Detection:", self.detection_status_label)
+        form.addRow("Crowd Counting:", self.crowd_status_label)
 
         return box
 
@@ -422,6 +443,31 @@ class MainWindow(QMainWindow):
         else:
             self.active_classes_label.setText("(semua)")
 
+        self._set_module_status_label(self.detection_status_label, msg.get("detection_enabled"))
+        self._set_module_status_label(self.crowd_status_label, msg.get("crowd_counting_enabled"))
+
+        # Sinkronkan checkbox toggle di panel config supaya merefleksikan
+        # status aktual dari server, bukan cuma niat terakhir yang dikirim.
+        if isinstance(msg.get("detection_enabled"), bool):
+            self.detection_enabled_cb.blockSignals(True)
+            self.detection_enabled_cb.setChecked(msg["detection_enabled"])
+            self.detection_enabled_cb.blockSignals(False)
+        if isinstance(msg.get("crowd_counting_enabled"), bool):
+            self.crowd_enabled_cb.blockSignals(True)
+            self.crowd_enabled_cb.setChecked(msg["crowd_counting_enabled"])
+            self.crowd_enabled_cb.blockSignals(False)
+
+    def _set_module_status_label(self, label: QLabel, enabled):
+        if enabled is True:
+            label.setText("● Aktif")
+            label.setStyleSheet("color: #2a2; font-weight: bold;")
+        elif enabled is False:
+            label.setText("○ Nonaktif")
+            label.setStyleSheet("color: #b33; font-weight: bold;")
+        else:
+            label.setText("-")
+            label.setStyleSheet("")
+            
     def _handle_ack(self, msg: dict):
         status = msg.get("status")
         color = "#2a2" if status == "applied" else "#b33"
@@ -448,9 +494,12 @@ class MainWindow(QMainWindow):
             classes_list = [c.strip() for c in classes_text.split(",") if c.strip()]
             params["classes_enabled"] = classes_list
 
+        params["detection_enabled"] = self.detection_enabled_cb.isChecked()
+        params["crowd_counting_enabled"] = self.crowd_enabled_cb.isChecked()
+
         if not params:
             QMessageBox.information(self, "Tidak ada parameter",
-                                     "Centang minimal satu parameter untuk dikirim.")
+                                    "Centang minimal satu parameter untuk dikirim.")
             return
 
         command_id = str(uuid.uuid4())
@@ -468,7 +517,6 @@ class MainWindow(QMainWindow):
             self.ack_label.setStyleSheet("color: #888;")
         else:
             self._log("Gagal mengirim: belum terhubung ke server.")
-
     # ------------------------------------------------------------
     # File .names (nama class)
     # ------------------------------------------------------------

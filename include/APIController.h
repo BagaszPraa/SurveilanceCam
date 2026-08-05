@@ -22,6 +22,7 @@
 
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -47,6 +48,11 @@ struct AIConfig {
     double confidence_threshold = 0.75;
     double iou_threshold = 0.45;
     std::set<std::string> classes_enabled;
+
+    // Opsional: hanya ter-set kalau client memang mengirim field ini di
+    // params, supaya bisa dibedakan dari "tidak diubah pada command ini".
+    std::optional<bool> detection_enabled;
+    std::optional<bool> crowd_counting_enabled;
 };
 // ---------------- Runtime AI config, diubah live via APIController ----------------
 struct RuntimeAIConfig {
@@ -81,9 +87,14 @@ public:
                               const std::vector<ApiDetection>& dets,
                               double inference_time_ms);
 
+    // detection_enabled/crowd_counting_enabled: status modul saat ini,
+    // dikirim di field "detection_enabled"/"crowd_counting_enabled" pada
+    // payload ai_status, supaya client (GUI/CLI) bisa sinkron statusnya.
     void broadcastStatus(const std::string& model_name,
                           double fps,
-                          const AIConfig& cfg);
+                          const AIConfig& cfg,
+                          bool detection_enabled,
+                          bool crowd_counting_enabled);
 
 private:
     void onOpen(ConnHandle hdl);
