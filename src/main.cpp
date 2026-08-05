@@ -409,9 +409,9 @@ int main(int argc, char* argv[]) {
         if (_appConfig.isCrowdCounting && crowdCounter && crowdResult.valid) {
             cv::addWeighted(frame, 1.0, crowdResult.heatmapOverlay, 0.4, 0.0, frame);
 
-            std::string crowdText = "Crowd est.: " + std::to_string(crowdResult.estimatedCount);
+            std::string crowdText = "Estimasi Kerumunan: " + std::to_string(crowdResult.estimatedCount);
             cv::putText(frame, crowdText, cv::Point(20, 160),
-                        cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 200, 255), 1);
+                        cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 200, 255), 3);
 
             // apiController.broadcastCrowdCount(frameId, crowdResult.estimatedCount);
         }
@@ -442,18 +442,18 @@ int main(int argc, char* argv[]) {
                 std::lock_guard<std::mutex> fpsLock(fpsMutex);
                 captureFpsSnapshot = captureFps;
             }
-            std::string countText = "Detection count: " + std::to_string(detections.size()) +
+            std::string countText = "Jumlah Deteksi: " + std::to_string(detections.size()) +
                                      "  |  Infer: " + std::to_string(static_cast<int>(inferMs)) + " ms";
-            std::string fpsText = "Capture FPS: " + std::to_string(static_cast<int>(captureFpsSnapshot)) +
-                                   "  |  Display FPS: " + std::to_string(static_cast<int>(displayFps));
+            std::string fpsText = "FPS Sumber: " + std::to_string(static_cast<int>(captureFpsSnapshot)) +
+                                   "  |  FPS Output: " + std::to_string(static_cast<int>(displayFps));
             std::string resText = "Resolusi: " + std::to_string(frame.cols) + "x" + std::to_string(frame.rows);
 
             cv::putText(frame, countText, cv::Point(20, 40),
-                        cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 1);
+                        cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 3);
             cv::putText(frame, fpsText, cv::Point(20, 80),
-                        cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 1);
+                        cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 3);
             cv::putText(frame, resText, cv::Point(20, 120),
-                        cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 1);
+                        cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 3);
         }
 
         rtspServer.pushFrame(frame);
