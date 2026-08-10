@@ -198,6 +198,31 @@ int main(int argc, char* argv[]) {
         // baru benar-benar berlaku setelah aplikasi di-restart -- makanya
         // config_ack untuk parameter ini berisi requires_restart=true.
 
+        // ---- Broadcast "config": HANYA dikirim di sini, yaitu saat ada
+        // command dari client (bukan berkala di loop utama). Ambil nilai
+        // conf/class terbaru dari runtimeAiConfig (sudah di-update di atas).
+        // Untuk nms, pakai nilai baru dari command ini kalau dikirim,
+        // kalau tidak fallback ke _appConfig.nmsThresh -- karena
+        // persistConfig() di APIController baru menulis ke _appConfig
+        // SETELAH callback ini selesai (applied == true), jadi belum
+        // tentu ter-update di titik ini.
+        double statusConfidenceThreshold;
+        std::set<std::string> statusClasses;
+        {
+            std::lock_guard<std::mutex> lock(runtimeAiConfig.mtx);
+            statusConfidenceThreshold = runtimeAiConfig.confidenceThreshold;
+            for (int c : runtimeAiConfig.targetClasses) {
+                statusClasses.insert(std::to_string(c));
+            }
+        }
+        double statusNms = newCfg.iouThreshold.has_value()
+                                ? newCfg.iouThreshold.value()
+                                : _appConfig.nmsThresh;
+
+        apiController.broadcastConfig(statusConfidenceThreshold, statusNms,
+                                       statusClasses, _appConfig.showOverlay,
+                                       _appConfig.isDetection, _appConfig.isCrowdCounting);
+
         logInfo("Config AI diperbarui via cmd.");
         return true;
     });
@@ -408,19 +433,19 @@ int main(int argc, char* argv[]) {
 
         auto t1 = std::chrono::steady_clock::now();
         inferMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
+        std::vector<ApiDetectionResult> apiDets;
+        ApiCrowdResult apiCrowd;
         // ---- Bbox deteksi: SELALU digambar kalau isDetection aktif,
         // terlepas dari showOverlay. showOverlay hanya mengontrol teks
         // statistik tambahan (count/FPS/resolusi), bukan bbox itu sendiri. ----
         if (_appConfig.isDetection) {
             detections = applyRuntimeFilter(rawDetections, runtimeAiConfig);
 
-            std::vector<ApiDetection> apiDets;
             apiDets.reserve(detections.size());
             int idx = 0;
             for (const auto& det : detections) {
-                ApiDetection ad;
-                ad.id = "det_" + std::to_string(frameId) + "_" + std::to_string(idx++);
+                ApiDetectionResult ad;
+                ad.id = idx++;
                 ad.cls = detector->getClassName(det.classId);
                 ad.confidence = det.confidence;
                 ad.bbox_x = static_cast<double>(det.box.x) / frame.cols;
@@ -429,7 +454,6 @@ int main(int argc, char* argv[]) {
                 ad.bbox_h = static_cast<double>(det.box.height) / frame.rows;
                 apiDets.push_back(ad);
             }
-            apiController.broadcastDetections(frameId, frame.cols, frame.rows, apiDets, inferMs);
 
             for (const auto& det : detections) {
                 cv::rectangle(frame, det.box, cv::Scalar(0, 255, 0), 2);
@@ -455,9 +479,10 @@ int main(int argc, char* argv[]) {
                 cv::putText(frame, crowdText, cv::Point(20, 160),
                             cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 200, 255), 3);
             }
-
-            // apiController.broadcastCrowdCount(frameId, crowdResult.estimatedCount);
         }
+        apiCrowd.count = crowdResult.estimatedCount;
+        apiCrowd.densityLevel = crowdResult.densityLevel;
+        apiController.broadcastResult(frameId, frame.cols, frame.rows, apiDets, inferMs, displayFps, apiCrowd);
 
         ++displayFrameCount;
         auto now = std::chrono::steady_clock::now();
@@ -467,19 +492,9 @@ int main(int argc, char* argv[]) {
             displayFps = displayFrameCount / elapsed;
             displayFrameCount = 0;
             displayFpsWindowStart = now;
-
-            double statusConfidenceThreshold;
-            std::set<std::string> statusClasses;
-            {
-                std::lock_guard<std::mutex> lock(runtimeAiConfig.mtx);
-                statusConfidenceThreshold = runtimeAiConfig.confidenceThreshold;
-                for (int c : runtimeAiConfig.targetClasses) {
-                    statusClasses.insert(std::to_string(c));
-                }
-            }
-            apiController.broadcastStatus(_appConfig.modelPath, displayFps,
-                                        statusConfidenceThreshold, statusClasses,
-                                        _appConfig.isDetection, _appConfig.isCrowdCounting);
+            // broadcastConfig TIDAK dikirim di sini lagi -- sekarang cuma
+            // dikirim saat ada command "cmd" masuk dari client, lihat
+            // setConfigCommandHandler di atas.
         }
 
         // ---- Teks statistik (count/infer time/FPS/resolusi): HANYA

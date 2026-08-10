@@ -103,54 +103,66 @@ void APIController::run(uint16_t port) {
 // ------------------------------------------------------------------
 // Broadcast
 // ------------------------------------------------------------------
-void APIController::broadcastDetections(long frame_id,
-                                         int res_w, int res_h,
-                                         const std::vector<ApiDetection>& dets,
-                                         double inference_time_ms) {
+
+// Pesan "result": hasil deteksi + crowd counting untuk satu frame,
+// beserta fps saat ini. Key JSON sengaja dipersingkat untuk hemat
+// bandwidth (dikirim tiap frame). Lihat komentar format di
+// APIController.h.
+void APIController::broadcastResult(long frame_id,
+                                     int res_w, int res_h,
+                                     const std::vector<ApiDetectionResult>& dets,
+                                     double inference_time_ms,
+                                     double fps,
+                                     const ApiCrowdResult& crowd) {
     json j;
-    j["type"] = "detection_result";
-    j["timestamp"] = isoTimestampNow();
-    j["frame_id"] = frame_id;
-    j["resolution"] = {{"width", res_w}, {"height", res_h}};
-    j["inference_time_ms"] = inference_time_ms;
+    j["t"] = "result";
+    j["ts"] = isoTimestampNow();
+    j["f"] = frame_id;
+    j["res"] = {{"w", res_w}, {"h", res_h}};
+    j["inf"] = inference_time_ms;
+    j["fps"] = fps;
 
     json arr = json::array();
     for (const auto& d : dets) {
         json jd;
         jd["id"] = d.id;
-        jd["class"] = d.cls;
-        jd["confidence"] = d.confidence;
-        jd["bbox"] = {
-            {"x", d.bbox_x}, {"y", d.bbox_y},
-            {"w", d.bbox_w}, {"h", d.bbox_h}
-        };
-        jd["bbox_format"] = "xywh_normalized";
+        jd["cls"] = d.cls;
+        jd["cf"] = d.confidence;
+        jd["bbox"] = { d.bbox_x, d.bbox_y, d.bbox_w, d.bbox_h };
         arr.push_back(jd);
     }
-    j["detections"] = arr;
+    j["det"] = arr;
+
+    j["crwd"] = {
+        {"cnt", crowd.count},
+        {"lvl", crowd.densityLevel}
+    };
 
     broadcastRaw(j.dump());
 }
 
-void APIController::broadcastStatus(const std::string& model_name,
-                                     double fps,
-                                     double currentConfidenceThreshold,
+// Pesan "config": konfigurasi & status modul AI saat ini. Dikirim saat
+// konfigurasi berubah / sinkronisasi berkala, bukan tiap frame -- jadi
+// tidak perlu sehemat "result".
+void APIController::broadcastConfig(double currentConfidenceThreshold,
+                                     double currentIouThreshold,
                                      const std::set<std::string>& currentClasses,
+                                     bool showOverlay,
                                      bool detection_enabled,
                                      bool crowd_counting_enabled) {
     json j;
-    j["type"] = "ai_status";
-    j["timestamp"] = isoTimestampNow();
-    j["status"] = "running";
-    j["model"] = model_name;
-    j["fps"] = fps;
-    j["current_threshold"] = currentConfidenceThreshold;
-    j["detection_enabled"] = detection_enabled;
-    j["crowd_counting_enabled"] = crowd_counting_enabled;
+    j["t"] = "config";
+    j["ts"] = isoTimestampNow();
+    j["conf"] = currentConfidenceThreshold;
+    j["nms"] = currentIouThreshold;
 
     json classes = json::array();
     for (const auto& c : currentClasses) classes.push_back(c);
-    j["active_classes"] = classes;
+    j["cls"] = classes;
+
+    j["overlay"] = showOverlay;
+    j["det_on"] = detection_enabled;
+    j["crwd_on"] = crowd_counting_enabled;
 
     broadcastRaw(j.dump());
 }

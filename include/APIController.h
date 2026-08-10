@@ -34,12 +34,21 @@ using ConnHandle = websocketpp::connection_hdl;
 // ------------------------------------------------------------------
 // Struct hasil deteksi tunggal
 // ------------------------------------------------------------------
-struct ApiDetection {
-    std::string id;
+struct ApiDetectionResult {
+    int id;
     std::string cls;         // "person", "vehicle", dll
     double confidence;
     double bbox_x, bbox_y, bbox_w, bbox_h;  // format: xywh, normalized 0..1
 };
+
+// ------------------------------------------------------------------
+// Struct hasil crowd counting untuk satu frame.
+// ------------------------------------------------------------------
+struct ApiCrowdResult {
+    long count = 0;
+    int densityLevel;   // 0 = emboh | 1=normal | 2=medium | 3=crowded
+};
+
 
 // ------------------------------------------------------------------
 // Struct konfigurasi AI yang bisa diubah lewat command "cmd" dari GCS.
@@ -103,8 +112,37 @@ struct RuntimeAIConfig {
 // ------------------------------------------------------------------
 // APIController
 //
-// Mengelola koneksi WebSocket ke GCS: broadcast data (deteksi & status)
-// dan menangani command masuk (ubah konfigurasi AI).
+// Mengelola koneksi WebSocket ke GCS: broadcast data (hasil per-frame &
+// konfigurasi) dan menangani command masuk (ubah konfigurasi AI).
+//
+// Format pesan broadcast (key JSON singkat untuk hemat bandwidth):
+//
+//   "result" -- dikirim tiap frame (broadcastResult):
+//   {
+//     "t": "result",
+//     "ts": "2026-08-10T03:20:10.500Z",
+//     "f": 10250,
+//     "res": { "w": 1280, "h": 720 },
+//     "inf": 25.1,
+//     "fps": 24.7,
+//     "det": [
+//       { "id": 1, "cls": "person", "cf": 0.87, "bbox": [0.42, 0.31, 0.12, 0.25] }
+//     ],
+//     "crwd": { "cnt": 1000, "lvl": "crowded" }
+//   }
+//
+//   "config" -- dikirim saat konfigurasi berubah / sinkronisasi status
+//   (broadcastConfig):
+//   {
+//     "t": "config",
+//     "ts": "2026-08-10T03:20:10.500Z",
+//     "conf": 0.5,
+//     "nms": 0.45,
+//     "cls": ["person", "vehicle"],
+//     "overlay": true,
+//     "det_on": true,
+//     "crwd_on": true
+//   }
 // ------------------------------------------------------------------
 class APIController {
 public:
@@ -121,18 +159,22 @@ public:
 
     void run(uint16_t port);
 
-    void broadcastDetections(long frame_id,
-                              int res_w, int res_h,
-                              const std::vector<ApiDetection>& dets,
-                              double inference_time_ms);
-
-    // detection_enabled/crowd_counting_enabled: status modul saat ini,
-    // dikirim di payload ai_status, supaya client (GUI/CLI) bisa sinkron
-    // statusnya.
-    void broadcastStatus(const std::string& model_name,
+    // Broadcast pesan "result": hasil deteksi + crowd counting untuk satu
+    // frame, termasuk fps saat ini. Dikirim tiap frame (real-time).
+    void broadcastResult(long frame_id,
+                          int res_w, int res_h,
+                          const std::vector<ApiDetectionResult>& dets,
+                          double inference_time_ms,
                           double fps,
-                          double currentConfidenceThreshold,
+                          const ApiCrowdResult& crowd);
+
+    // Broadcast pesan "config": konfigurasi & status modul AI saat ini.
+    // Dikirim saat konfigurasi berubah atau untuk sinkronisasi berkala,
+    // bukan tiap frame.
+    void broadcastConfig(double currentConfidenceThreshold,
+                          double currentIouThreshold,
                           const std::set<std::string>& currentClasses,
+                          bool showOverlay,
                           bool detection_enabled,
                           bool crowd_counting_enabled);
 

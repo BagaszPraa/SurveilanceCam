@@ -5,11 +5,28 @@ APIDebugGUI.py — GUI debug client (PySide6) untuk APIController
 
 Fungsi:
   - Connect/disconnect ke APIController lewat GUI (host & port bisa diubah).
-  - Live view detection_result & ai_status di panel terpisah.
+  - Live view pesan "result" (deteksi + crowd counting + fps) dan "config"
+    (status konfigurasi AI) di panel terpisah.
   - Ubah semua parameter yang didukung config_command:
-      confidence_threshold, iou_threshold, classes_enabled.
+      conf, nms, class, detect, crowd, overlay, dan golongan semi-dev.
   - Lihat config_ack (applied/rejected) langsung di panel status.
   - Log mentah (raw JSON) opsional, plus statistik jumlah pesan per tipe.
+
+Catatan format pesan broadcast (dari APIController, key "t"):
+  "result" -- dikirim tiap frame:
+    { "t":"result", "ts":..., "f":<frame_id>, "res":{"w":..,"h":..},
+      "inf":<inference_ms>, "fps":<fps>,
+      "det":[{"id":1,"cls":"person","cf":0.87,"bbox":[x,y,w,h]}, ...],
+      "crwd":{"cnt":1000,"lvl":"crowded"} }
+
+  "config" -- dikirim saat konfigurasi berubah / sinkronisasi:
+    { "t":"config", "ts":..., "conf":0.5, "nms":0.45,
+      "cls":["person","vehicle"], "overlay":true,
+      "det_on":true, "crwd_on":true }
+
+  Pesan command/ack (GCS<->Drone) TIDAK berubah, masih pakai key "type":
+    cmd (kirim)      -> {"type":"cmd","command_id":...,"params":{...}}
+    config_ack (terima) -> {"type":"config_ack","command_id":...,"status":...}
 
 Instalasi dependency:
     pip install PySide6 websocket-client
@@ -116,7 +133,7 @@ class MainWindow(QMainWindow):
         self.ws_thread: WsClientThread | None = None
         self.pending_acks: dict[str, dict] = {}
         self.msg_counts: dict[str, int] = {}
-        self.last_detection_ts: float | None = None
+        self.last_result_ts: float | None = None
 
         # Nama class dari file .names (index baris = class ID), dipakai
         # untuk menampilkan nama alih-alih ID mentah di panel config &
@@ -352,35 +369,44 @@ class MainWindow(QMainWindow):
         return box
 
     def _build_status_group(self) -> QGroupBox:
-        box = QGroupBox("Status AI terkini (dari ai_status)")
+        # Sumber data panel ini sekarang pesan "config" (bukan "ai_status").
+        # "model" tidak lagi dikirim di protokol baru, jadi baris itu
+        # dihapus. "fps" dipindah -- sekarang datang dari pesan "result"
+        # (per-frame), bukan dari "config".
+        box = QGroupBox("Status AI terkini (dari config)")
         form = QFormLayout(box)
 
-        self.model_label = QLabel("-")
         self.fps_label = QLabel("-")
         self.current_threshold_label = QLabel("-")
+        self.iou_label = QLabel("-")
         self.active_classes_label = QLabel("-")
         self.active_classes_label.setWordWrap(True)
         self.detection_status_label = QLabel("-")
         self.crowd_status_label = QLabel("-")
+        self.overlay_status_label = QLabel("-")
 
-        form.addRow("Model:", self.model_label)
-        form.addRow("FPS:", self.fps_label)
-        form.addRow("Threshold aktif:", self.current_threshold_label)
+        form.addRow("FPS (dari result):", self.fps_label)
+        form.addRow("conf aktif:", self.current_threshold_label)
+        form.addRow("nms aktif:", self.iou_label)
         form.addRow("Class aktif:", self.active_classes_label)
         form.addRow("Detection:", self.detection_status_label)
         form.addRow("Crowd Counting:", self.crowd_status_label)
+        form.addRow("Overlay:", self.overlay_status_label)
 
         return box
 
     def _build_detections_group(self) -> QGroupBox:
-        box = QGroupBox("Deteksi terakhir (detection_result)")
+        box = QGroupBox("Hasil frame terakhir (result: deteksi + crowd)")
         layout = QVBoxLayout(box)
 
         self.frame_info_label = QLabel("Belum ada frame diterima.")
         layout.addWidget(self.frame_info_label)
 
+        self.crowd_info_label = QLabel("Crowd counting: -")
+        layout.addWidget(self.crowd_info_label)
+
         self.det_table = QTableWidget(0, 5)
-        self.det_table.setHorizontalHeaderLabels(["Class", "Confidence", "X", "Y", "W/H"])
+        self.det_table.setHorizontalHeaderLabels(["ID", "Class", "Confidence", "X, Y", "W, H"])
         self.det_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.det_table.verticalHeader().setVisible(False)
         self.det_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -460,73 +486,102 @@ class MainWindow(QMainWindow):
     # Message dispatch
     # ------------------------------------------------------------
     def _on_ws_message(self, msg: dict):
-        msg_type = msg.get("type", "unknown")
+        # Pesan broadcast ("result"/"config") pakai key singkat "t".
+        # Pesan command_ack (jalur cmd) masih pakai key "type" -- tidak
+        # diubah, beda jalur dari broadcastResult/broadcastConfig.
+        msg_type = msg.get("t") or msg.get("type", "unknown")
         self.msg_counts[msg_type] = self.msg_counts.get(msg_type, 0) + 1
         self._update_stats_label()
 
-        if msg_type == "detection_result":
-            self._handle_detection(msg)
-        elif msg_type == "ai_status":
-            self._handle_status(msg)
+        if msg_type == "result":
+            self._handle_result(msg)
+        elif msg_type == "config":
+            self._handle_config(msg)
         elif msg_type == "config_ack":
             self._handle_ack(msg)
         else:
             self._log(f"Tipe pesan tidak dikenal: {msg}")
 
-    def _handle_detection(self, msg: dict):
+    def _handle_result(self, msg: dict):
+        """Tangani pesan 't':'result' -- deteksi + crowd counting + fps
+        untuk satu frame. Lihat format lengkap di docstring modul."""
         now = time.time()
         interval_str = ""
-        if self.last_detection_ts is not None:
-            dt = now - self.last_detection_ts
+        if self.last_result_ts is not None:
+            dt = now - self.last_result_ts
             interval_str = f" (+{dt*1000:.0f}ms)"
-        self.last_detection_ts = now
+        self.last_result_ts = now
 
-        dets = msg.get("detections", [])
-        res = msg.get("resolution", {})
-        infer_ms = msg.get("inference_time_ms", 0)
+        dets = msg.get("det", [])
+        res = msg.get("res", {})
+        infer_ms = msg.get("inf", 0)
+        fps = msg.get("fps")
+        crowd = msg.get("crwd", {})
+
+        # fps sekarang datang dari "result", bukan "config"
+        self.fps_label.setText(f"{fps:.1f}" if isinstance(fps, (int, float)) else "-")
 
         self.frame_info_label.setText(
-            f"frame={msg.get('frame_id')}  res={res.get('width')}x{res.get('height')}  "
-            f"infer={infer_ms:.1f}ms  count={len(dets)}{interval_str}"
+            f"frame={msg.get('f')}  res={res.get('w')}x{res.get('h')}  "
+            f"infer={infer_ms:.1f}ms  fps={fps if fps is not None else '-'}  "
+            f"count={len(dets)}{interval_str}"
         )
+
+        cnt = crowd.get("cnt")
+        lvl = crowd.get("lvl")
+        if cnt is not None or lvl is not None:
+            self.crowd_info_label.setText(f"Crowd counting: count={cnt}  level={lvl}")
+        else:
+            self.crowd_info_label.setText("Crowd counting: -")
 
         self.det_table.setRowCount(len(dets))
         for row, d in enumerate(dets):
-            bbox = d.get("bbox", {})
+            bbox = d.get("bbox", [0, 0, 0, 0])  # array [x, y, w, h]
+            x = bbox[0] if len(bbox) > 0 else 0
+            y = bbox[1] if len(bbox) > 1 else 0
+            w = bbox[2] if len(bbox) > 2 else 0
+            h = bbox[3] if len(bbox) > 3 else 0
             values = [
-                str(d.get("class", "")),
-                f"{d.get('confidence', 0):.2f}",
-                f"{bbox.get('x', 0):.3f}",
-                f"{bbox.get('y', 0):.3f}",
-                f"{bbox.get('w', 0):.3f} / {bbox.get('h', 0):.3f}",
+                str(d.get("id", "")),
+                str(d.get("cls", "")),
+                f"{d.get('cf', 0):.2f}",
+                f"{x:.3f}, {y:.3f}",
+                f"{w:.3f}, {h:.3f}",
             ]
             for col, val in enumerate(values):
                 self.det_table.setItem(row, col, QTableWidgetItem(val))
 
-    def _handle_status(self, msg: dict):
-        self.model_label.setText(str(msg.get("model", "-")))
-        fps = msg.get("fps")
-        self.fps_label.setText(f"{fps:.1f}" if isinstance(fps, (int, float)) else "-")
-        self.current_threshold_label.setText(str(msg.get("current_threshold", "-")))
-        classes = msg.get("active_classes", [])
+    def _handle_config(self, msg: dict):
+        """Tangani pesan 't':'config' -- status konfigurasi AI saat ini.
+        Menggantikan handler 'ai_status' lama; field 'model' sudah tidak
+        ada di protokol baru, dan 'fps' sekarang berasal dari 'result'."""
+        self.current_threshold_label.setText(str(msg.get("conf", "-")))
+        self.iou_label.setText(str(msg.get("nms", "-")))
+
+        classes = msg.get("cls", [])
         if classes:
             self.active_classes_label.setText(", ".join(self._class_label(c) for c in classes))
         else:
             self.active_classes_label.setText("(semua)")
 
-        self._set_module_status_label(self.detection_status_label, msg.get("detection_enabled"))
-        self._set_module_status_label(self.crowd_status_label, msg.get("crowd_counting_enabled"))
+        self._set_module_status_label(self.detection_status_label, msg.get("det_on"))
+        self._set_module_status_label(self.crowd_status_label, msg.get("crwd_on"))
+        self._set_module_status_label(self.overlay_status_label, msg.get("overlay"))
 
         # Sinkronkan checkbox toggle di panel config supaya merefleksikan
         # status aktual dari server, bukan cuma niat terakhir yang dikirim.
-        if isinstance(msg.get("detection_enabled"), bool):
+        if isinstance(msg.get("det_on"), bool):
             self.detection_enabled_cb.blockSignals(True)
-            self.detection_enabled_cb.setChecked(msg["detection_enabled"])
+            self.detection_enabled_cb.setChecked(msg["det_on"])
             self.detection_enabled_cb.blockSignals(False)
-        if isinstance(msg.get("crowd_counting_enabled"), bool):
+        if isinstance(msg.get("crwd_on"), bool):
             self.crowd_enabled_cb.blockSignals(True)
-            self.crowd_enabled_cb.setChecked(msg["crowd_counting_enabled"])
+            self.crowd_enabled_cb.setChecked(msg["crwd_on"])
             self.crowd_enabled_cb.blockSignals(False)
+        if isinstance(msg.get("overlay"), bool):
+            self.overlay_enabled_cb.blockSignals(True)
+            self.overlay_enabled_cb.setChecked(msg["overlay"])
+            self.overlay_enabled_cb.blockSignals(False)
 
     def _set_module_status_label(self, label: QLabel, enabled):
         if enabled is True:
@@ -538,8 +593,9 @@ class MainWindow(QMainWindow):
         else:
             label.setText("-")
             label.setStyleSheet("")
-            
+
     def _handle_ack(self, msg: dict):
+        # Tidak berubah -- config_ack masih pakai key "type" seperti semula.
         status = msg.get("status")
         color = "#2a2" if status == "applied" else "#b33"
         restart_note = ""
@@ -553,10 +609,12 @@ class MainWindow(QMainWindow):
         )
         self.ack_label.setStyleSheet(f"color: {color}; font-weight: bold;")
         self._log(f"config_ack diterima: command_id={msg.get('command_id')} status={status}{restart_note}{reason_note}")
+
     # ------------------------------------------------------------
     # Kirim config_command
     # ------------------------------------------------------------
     def _on_send_clicked(self):
+        # Tidak berubah -- format cmd/params masih sama dengan protokol asli.
         if self.ws_thread is None:
             return
 
@@ -608,6 +666,7 @@ class MainWindow(QMainWindow):
             self.ack_label.setStyleSheet("color: #888;")
         else:
             self._log("Gagal mengirim: belum terhubung ke server.")
+
     # ------------------------------------------------------------
     # File .names (nama class)
     # ------------------------------------------------------------

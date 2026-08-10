@@ -1,20 +1,25 @@
-{
-  "type": "cmd",
-  "command_id": "string (UUID)",
-  "timestamp": "string (ISO8601 UTC, opsional)",
-  "params": {
-    "conf": "number (0.0 - 1.0)",
-    "nms": "number (0.0 - 1.0)",
-    "class": ["string", "..."],
-    "detect": "boolean",
-    "crowd": "boolean",
-    "overlay": "boolean",
-
-    "crowd_interval": "integer",
-    "crowd_width": "integer",
-    "crowd_height": "integer",
-    "infer_size": "integer",
-    "bitrate_kbps": "integer",
-    "reconnect_ms": "integer"
+[
+  {
+    "t": "result",
+    "ts": "2026-08-10T03:20:10.500Z",
+    "f": 10250,
+    "res": { "w": 1280, "h": 720 },
+    "inf": 25.1,
+    "fps": 24.7,
+    "det": [
+      { "id": 1, "cls": "person", "cf": 0.87, "bbox": [0.42, 0.31, 0.12, 0.25] },
+      { "id": 2, "cls": "vehicle", "cf": 0.76, "bbox": [0.10, 0.55, 0.20, 0.18] }
+    ],
+    "crwd": { "cnt": 1000, "lvl": "crowded" }
+  },
+  {
+    "t": "config",
+    "ts": "2026-08-10T03:20:10.500Z",
+    "conf": 0.5,
+    "nms": 0.45,
+    "cls": ["person", "vehicle"],
+    "overlay": true,
+    "det_on": true,
+    "crwd_on": true
   }
-}
+]

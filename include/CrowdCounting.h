@@ -24,6 +24,7 @@ struct CrowdCountResult {
     cv::Mat heatmapOverlay;
     int     estimatedCount = 0;
     bool    valid = false;
+    int     densityLevel = 0; // 0 = emboh | 1=normal | 2=medium | 3=crowded
 };
 
 // Modul Crowd Counting berbasis density-map network (DM-Count, VGG-19
