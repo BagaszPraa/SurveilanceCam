@@ -21,6 +21,7 @@ pkg_check_modules(GST REQUIRED
     gstreamer-app-1.0
     gstreamer-video-1.0
     gstreamer-rtsp-server-1.0
+    gstreamer-pbutils-1.0
 )
 
 # ---- Lokasi TensorRT ----
