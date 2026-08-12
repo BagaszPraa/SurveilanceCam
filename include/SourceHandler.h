@@ -13,6 +13,8 @@
 #include <atomic>
 #include <string>
 #include <vector>
+#include <map>
+#include <mutex>
 
 // Codec yang berhasil dideteksi dari stream RTSP
 enum class VideoCodecType {
@@ -55,4 +57,15 @@ private:
     static void logInfo(const std::string& msg);
     static void logWarn(const std::string& msg);
     static void logError(const std::string& msg);
+
+    // ---- Cache hasil probe codec per URL ----
+    // GstDiscoverer di probeRtspCodec() bikin koneksi RTSP-nya SENDIRI
+    // (terpisah dari koneksi capture via cap.open()). Tanpa cache, tiap kali
+    // openCapture() dipanggil -- termasuk tiap percobaan reconnect -- RTSP
+    // server di-connect DUA KALI (sekali oleh discoverer, sekali oleh
+    // cap.open()) dan NVDEC/decoder session sempat di-init dua kali.
+    // Cache ini membuat probing hanya terjadi sekali per URL; percobaan
+    // reconnect berikutnya langsung pakai hasil yang sudah diketahui.
+    std::map<std::string, VideoCodecType> m_codecCache;
+    std::mutex m_codecCacheMutex;
 };

@@ -69,18 +69,44 @@ GstDecoderBackend SourceHandler::detectDecoderBackend(VideoCodecType codec)
 // dibangun, supaya depay/parse element yang dipasang sesuai (rtph264depay
 // vs rtph265depay tidak bisa dipakai tertukar). Ada timeout biar gak
 // nge-hang kalau stream mati/lambat -> fallback ke H264.
+//
+// PENTING: GstDiscoverer membuka koneksi RTSP-nya SENDIRI, terpisah dari
+// koneksi yang dipakai cap.open() untuk capture. Tanpa cache, setiap kali
+// openCapture() dipanggil -- termasuk tiap kali reconnect loop mencoba
+// lagi -- RTSP server akan menerima DUA koneksi (discoverer + capture) dan
+// decoder hardware (mis. NVDEC di Jetson) sempat di-init dua kali. Maka
+// hasil probe di-cache per URL: probing sungguhan cuma jalan sekali,
+// reconnect berikutnya langsung pakai hasil yang sudah diketahui.
 // ---------------------------------------------------
 VideoCodecType SourceHandler::probeRtspCodec(const std::string& url, int timeoutSec)
 {
+    {
+        std::lock_guard<std::mutex> lock(m_codecCacheMutex);
+        auto it = m_codecCache.find(url);
+        if (it != m_codecCache.end()) {
+            logInfo("Codec RTSP untuk '" + url + "' sudah pernah di-probe sebelumnya "
+                    "(" + codecToString(it->second) + "), pakai cache -- skip koneksi discoverer.");
+            return it->second;
+        }
+    }
+
     if (!gst_is_initialized()) {
         gst_init(nullptr, nullptr);
     }
+
+    // Hanya hasil probe yang BENAR-BENAR sukses (berhasil connect & baca
+    // codec dari stream) yang boleh di-cache. Kalau gagal/timeout (mis.
+    // RTSP server belum nyala saat percobaan reconnect pertama), fallback
+    // H264 di bawah dipakai sekali jalan saja tanpa disimpan ke cache --
+    // supaya reconnect berikutnya tetap mencoba probe ulang, bukan
+    // ke-lock permanen ke asumsi yang salah.
+    bool probeSucceeded = false;
 
     GError* err = nullptr;
     GstDiscoverer* discoverer = gst_discoverer_new((GstClockTime)timeoutSec * GST_SECOND, &err);
     if (!discoverer) {
         logWarn("Gagal membuat GstDiscoverer: " + std::string(err ? err->message : "unknown") +
-                " -> fallback H264");
+                " -> fallback H264 (tidak di-cache, akan dicoba probe ulang)");
         if (err) g_error_free(err);
         return VideoCodecType::H264;
     }
@@ -90,7 +116,8 @@ VideoCodecType SourceHandler::probeRtspCodec(const std::string& url, int timeout
     VideoCodecType result = VideoCodecType::UNKNOWN;
 
     if (!info || discErr != nullptr) {
-        logWarn("Probe codec RTSP gagal/timeout, fallback ke H264. (" +
+        logWarn("Probe codec RTSP gagal/timeout, fallback ke H264 (tidak di-cache, "
+                "akan dicoba probe ulang). (" +
                 std::string(discErr ? discErr->message : "no info") + ")");
         if (discErr) g_error_free(discErr);
     } else {
@@ -105,8 +132,10 @@ VideoCodecType SourceHandler::probeRtspCodec(const std::string& url, int timeout
 
                 if (s.find("video/x-h265") != std::string::npos) {
                     result = VideoCodecType::H265;
+                    probeSucceeded = true;
                 } else if (s.find("video/x-h264") != std::string::npos) {
                     result = VideoCodecType::H264;
+                    probeSucceeded = true;
                 }
 
                 if (capsStr) g_free(capsStr);
@@ -121,9 +150,20 @@ VideoCodecType SourceHandler::probeRtspCodec(const std::string& url, int timeout
     g_object_unref(discoverer);
 
     if (result == VideoCodecType::UNKNOWN) {
+        // Discoverer sukses connect, tapi codec-nya tidak terbaca dari caps
+        // (kasus langka). Tetap dianggap "berhasil probe" -- stream-nya ada
+        // dan terbaca, cuma nggak dikenali -- jadi aman untuk di-cache
+        // supaya tidak connect ulang tiap reconnect untuk hasil yang sama.
         logWarn("Codec tidak terdeteksi dari stream, default ke H264");
         result = VideoCodecType::H264;
+        probeSucceeded = true;
     }
+
+    if (probeSucceeded) {
+        std::lock_guard<std::mutex> lock(m_codecCacheMutex);
+        m_codecCache[url] = result;
+    }
+
     return result;
 }
 
