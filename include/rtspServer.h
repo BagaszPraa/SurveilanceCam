@@ -13,9 +13,13 @@
 
 // ---------------------------------------------------
 // Pilihan encoder hardware/software
+// AUTO -> otomatis pilih yang terbaik & TERSEDIA di sistem,
+// prioritas: JETSON > NVIDIA_GPU > CPU (dicek lewat GStreamer
+// registry, bukan cuma tebak platform).
 // ---------------------------------------------------
 enum class EncoderType
 {
+    AUTO,         // otomatis deteksi encoder terbaik yang tersedia
     CPU,          // x264enc / x265enc (software, jalan di CPU)
     NVIDIA_GPU,   // nvh264enc / nvh265enc (NVENC, laptop/desktop dGPU NVIDIA)
     JETSON        // nvv4l2h264enc / nvv4l2h265enc (NVENC on-chip, Jetson)
@@ -46,6 +50,19 @@ public:
         int bitrateKbps
     );
 
+    // Overload praktis: encoder dipilih otomatis (EncoderType::AUTO),
+    // codec default H264. Tinggal pakai ini kalau tidak mau pusing
+    // urus kombinasi encoder/platform secara manual.
+    RtspServer(
+        int port,
+        const std::string& mountPoint,
+        int width,
+        int height,
+        int fps,
+        const std::string& host,
+        int bitrateKbps = 4000
+    );
+
     ~RtspServer();
 
     bool start();
@@ -63,6 +80,10 @@ public:
     void setCodecType(CodecType type);
     void setBitrateKbps(int bitrateKbps);
 
+    // Encoder yang benar-benar dipakai setelah resolusi AUTO (valid
+    // setelah start() dipanggil; sebelum itu bisa masih EncoderType::AUTO).
+    EncoderType activeEncoderType() const { return m_encoderType; }
+
 private:
 
     bool createServer();
@@ -71,6 +92,10 @@ private:
     std::string buildPipeline();
     std::string encoderElementName() const;
     static bool elementAvailable(const std::string& name);
+
+    // ---- Auto-detect encoder terbaik yang tersedia di sistem ----
+    // Prioritas: JETSON (nvv4l2h26xenc) > NVIDIA_GPU (nvh26xenc) > CPU (x26xenc)
+    static EncoderType detectBestEncoder(CodecType codec);
 
     static std::string encoderTypeToString(EncoderType type);
     static std::string codecTypeToString(CodecType type);

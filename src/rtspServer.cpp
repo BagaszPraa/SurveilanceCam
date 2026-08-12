@@ -25,6 +25,29 @@ RtspServer::RtspServer(
 {
 }
 
+// Overload praktis: encoder = AUTO, codec default H264.
+RtspServer::RtspServer(
+    int port,
+    const std::string& mountPoint,
+    int width,
+    int height,
+    int fps,
+    const std::string& host,
+    int bitrateKbps)
+    :
+    RtspServer(
+        port,
+        mountPoint,
+        width,
+        height,
+        fps,
+        host,
+        EncoderType::AUTO,
+        CodecType::H264,
+        bitrateKbps)
+{
+}
+
 RtspServer::~RtspServer()
 {
     stop();
@@ -52,6 +75,7 @@ std::string RtspServer::encoderTypeToString(EncoderType type)
 {
     switch (type)
     {
+        case EncoderType::AUTO:       return "AUTO";
         case EncoderType::CPU:        return "CPU";
         case EncoderType::NVIDIA_GPU: return "NVIDIA_GPU";
         case EncoderType::JETSON:     return "JETSON";
@@ -108,6 +132,17 @@ bool RtspServer::start()
         return true;
 
     gst_init(nullptr,nullptr);
+
+    // ---- Resolusi EncoderType::AUTO ke tipe konkret sebelum apa pun lain ----
+    // Dilakukan di sini (bukan cuma di createServer()) supaya log info di bawah
+    // dan seluruh alur berikutnya sudah melihat encoder yang benar-benar dipakai.
+    if (m_encoderType == EncoderType::AUTO)
+    {
+        EncoderType detected = detectBestEncoder(m_codecType);
+        logInfo("EncoderType::AUTO -> encoder terdeteksi & dipilih otomatis: "
+                + encoderTypeToString(detected));
+        m_encoderType = detected;
+    }
 
     logInfo("Memulai RTSP server dengan encoder="
             + encoderTypeToString(m_encoderType)
@@ -274,6 +309,55 @@ std::string RtspServer::url() const
 }
 
 // ---------------------------------------------------
+// Cek apakah plugin/elemen GStreamer tersedia di sistem
+// (mis. nvh265enc butuh plugin nvcodec ter-install).
+// ---------------------------------------------------
+bool RtspServer::elementAvailable(const std::string& name)
+{
+    if (!gst_is_initialized())
+    {
+        gst_init(nullptr, nullptr);
+    }
+
+    GstElementFactory* factory = gst_element_factory_find(name.c_str());
+    if (factory)
+    {
+        gst_object_unref(factory);
+        return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------
+// Auto-detect encoder terbaik yang BENAR-BENAR tersedia di sistem
+// (dicek lewat GStreamer registry, bukan tebak-tebak platform).
+// Prioritas: JETSON (NVENC on-chip) > NVIDIA_GPU (NVENC dGPU) > CPU (software).
+// ---------------------------------------------------
+EncoderType RtspServer::detectBestEncoder(CodecType codec)
+{
+    // Jetson: nvv4l2h264enc / nvv4l2h265enc (L4T multimedia API)
+    const std::string jetsonElem =
+        (codec == CodecType::H264) ? "nvv4l2h264enc" : "nvv4l2h265enc";
+    if (elementAvailable(jetsonElem))
+    {
+        return EncoderType::JETSON;
+    }
+
+    // NVIDIA dGPU: nvh264enc / nvh265enc (plugin nvcodec)
+    const std::string nvElem =
+        (codec == CodecType::H264) ? "nvh264enc" : "nvh265enc";
+    if (elementAvailable(nvElem))
+    {
+        return EncoderType::NVIDIA_GPU;
+    }
+
+    // Fallback software: x264enc / x265enc
+    // (tidak dicek elementAvailable() di sini -- kalau ini pun tidak ada,
+    // createServer() punya safety-net error yang jelas soal plugin yang kurang)
+    return EncoderType::CPU;
+}
+
+// ---------------------------------------------------
 // Nama elemen encoder GStreamer sesuai kombinasi
 // encoder type + codec type yang dipilih.
 // ---------------------------------------------------
@@ -289,23 +373,13 @@ std::string RtspServer::encoderElementName() const
 
         case EncoderType::JETSON:
             return (m_codecType == CodecType::H264) ? "nvv4l2h264enc" : "nvv4l2h265enc";
+
+        case EncoderType::AUTO:
+            // Seharusnya sudah di-resolve ke tipe konkret di start(), sebelum
+            // pernah sampai ke sini. Kalau somehow masih AUTO, aman-kan ke CPU.
+            return (m_codecType == CodecType::H264) ? "x264enc" : "x265enc";
     }
     return "";
-}
-
-// ---------------------------------------------------
-// Cek apakah plugin/elemen GStreamer tersedia di sistem
-// (mis. nvh265enc butuh plugin nvcodec ter-install).
-// ---------------------------------------------------
-bool RtspServer::elementAvailable(const std::string& name)
-{
-    GstElementFactory* factory = gst_element_factory_find(name.c_str());
-    if (factory)
-    {
-        gst_object_unref(factory);
-        return true;
-    }
-    return false;
 }
 
 // ---------------------------------------------------
@@ -313,6 +387,15 @@ bool RtspServer::elementAvailable(const std::string& name)
 // ---------------------------------------------------
 std::string RtspServer::buildPipeline()
 {
+    // Safety-net: kalau buildPipeline() ternyata dipanggil sebelum AUTO
+    // di-resolve (mis. dipanggil manual di luar start()), resolve di sini.
+    if (m_encoderType == EncoderType::AUTO)
+    {
+        logWarn("buildPipeline() dipanggil dengan EncoderType::AUTO yang belum "
+                "di-resolve, mendeteksi otomatis sekarang.");
+        m_encoderType = detectBestEncoder(m_codecType);
+    }
+
     // ---- bagian parse & payloader menyesuaikan codec ----
     std::string codecParse;
     std::string codecPay;
@@ -337,6 +420,11 @@ std::string RtspServer::buildPipeline()
 
     switch (m_encoderType)
     {
+        case EncoderType::AUTO:
+            // Tidak pernah tercapai (sudah di-resolve di atas), dibiarkan
+            // kosong di sini hanya supaya switch tetap exhaustive.
+            break;
+
         case EncoderType::CPU:
         {
             preConvert = "! videoconvert ! video/x-raw,format=I420 ";
@@ -499,6 +587,8 @@ bool RtspServer::createServer()
         TRUE);
 
     // ---- Validasi ketersediaan elemen encoder, fallback ke CPU kalau tidak ada ----
+    // (m_encoderType harusnya sudah konkret di sini karena AUTO di-resolve di
+    // start(); ini tetap dipertahankan sebagai safety-net terakhir.)
     std::string wantedElement = encoderElementName();
 
     if (!elementAvailable(wantedElement))
